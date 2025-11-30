@@ -1,3 +1,13 @@
+// Package protocols - Protocol Integration Bridge
+// Core integration layer kết nối tất cả 5 protocols lại với nhau
+// Chức năng:
+//   - Kích hoạt tất cả 5 protocols từ một HTTP API call
+//   - TCP: Broadcast progress updates đến connected clients
+//   - UDP: Gửi notifications đến subscribers
+//   - WebSocket: Notify chat rooms
+//   - gRPC: Log audit trail
+//   - HTTP: Tiếp nhận request ban đầu
+// Đây là core feature thể hiện multi-protocol integration!
 package protocols
 
 import (

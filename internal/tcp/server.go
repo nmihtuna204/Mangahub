@@ -1,3 +1,12 @@
+// Package tcp - TCP Synchronization Server Implementation
+// Quản lý TCP connections và broadcast messages đến clients
+// Chức năng:
+//   - Accept nhiều TCP connections đồng thời
+//   - Maintain danh sách active clients
+//   - Broadcast progress updates đến tất cả clients
+//   - Handle client disconnect gracefully
+//   - JSON message protocol
+//   - Concurrent goroutine cho mỗi client
 package tcp
 
 import (

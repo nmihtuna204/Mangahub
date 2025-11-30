@@ -1,3 +1,11 @@
+// Package logger - Structured Logging System
+// Cung cấp logging functionality cho toàn bộ application
+// Chức năng:
+//   - Multiple log levels (debug, info, warn, error, fatal)
+//   - JSON và text format support
+//   - Output đến stdout hoặc file
+//   - Request logging middleware cho Gin
+//   - Sử dụng logrus cho structured logging
 package logger
 
 import (

@@ -1,3 +1,10 @@
+// Package manga - Manga Management Service
+// Xử lý tất cả logic liên quan đến manga data
+// Chức năng:
+//   - Search manga với filters (query, status, genre)
+//   - Get manga details theo ID
+//   - Pagination support
+//   - Tích hợp với database layer
 package manga
 
 import (

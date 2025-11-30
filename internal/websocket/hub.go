@@ -1,3 +1,12 @@
+// Package websocket - WebSocket Chat Hub Implementation
+// Quản lý WebSocket connections và chat rooms
+// Chức năng:
+//   - Quản lý nhiều chat rooms (theo manga_id)
+//   - Client registration/unregistration cho mỗi room
+//   - Real-time message broadcasting trong room
+//   - Join/leave notifications
+//   - Bidirectional communication
+//   - Concurrent-safe với mutex
 package websocket
 
 import (

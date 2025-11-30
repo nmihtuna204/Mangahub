@@ -1,3 +1,12 @@
+// Package database - Database Connection and Schema Management
+// Xử lý SQLite database connections và migrations
+// Chức năng:
+//   - Initialize SQLite database connection
+//   - Run schema migrations (CREATE TABLE statements)
+//   - Connection pooling configuration
+//   - Health check queries
+//   - Seed initial data
+//   - Pure Go SQLite driver (glebarez/go-sqlite)
 package database
 
 import (

@@ -1,3 +1,11 @@
+// Package config - Application Configuration Management
+// Xử lý load và parse configuration từ YAML files
+// Chức năng:
+//   - Load config từ development.yaml/production.yaml
+//   - Server, Database, JWT, TCP, UDP, gRPC, WebSocket configs
+//   - Logging configuration
+//   - Environment-specific settings
+//   - Sử dụng Viper cho flexible config loading
 package config
 
 import (

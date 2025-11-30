@@ -1,3 +1,11 @@
+// Package models - Error Models and Handling
+// Định nghĩa các error types và error codes chuẩn
+// Chức năng:
+//   - AppError struct với HTTP status codes
+//   - Predefined error codes (VALIDATION_ERROR, NOT_FOUND, etc.)
+//   - Error helper functions
+//   - Consistent error response format
+//   - Implements error interface
 package models
 
 import (

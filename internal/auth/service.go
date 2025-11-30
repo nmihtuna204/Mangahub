@@ -1,3 +1,10 @@
+// Package auth - Authentication Service
+// Xử lý tất cả logic liên quan đến authentication và authorization
+// Chức năng:
+//   - User registration với password hashing (bcrypt)
+//   - User login với JWT token generation
+//   - Token validation và parsing
+//   - Session management
 package auth
 
 import (

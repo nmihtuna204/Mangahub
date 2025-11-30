@@ -1,3 +1,10 @@
+// Package progress - Reading Progress Service
+// Xử lý logic theo dõi tiến độ đọc truyện của user
+// Chức năng:
+//   - Update reading progress (chapter, status, rating)
+//   - List user's manga library với progress
+//   - Trigger protocol bridge khi có update
+//   - Manage reading history
 package progress
 
 import (

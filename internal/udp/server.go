@@ -1,3 +1,12 @@
+// Package udp - UDP Notification Server Implementation
+// Quản lý UDP datagram communication cho push notifications
+// Chức năng:
+//   - Nhận REGISTER/UNREGISTER messages từ clients
+//   - Maintain subscriber list
+//   - Broadcast chapter notifications đến tất cả subscribers
+//   - Connectionless protocol - không maintain state
+//   - JSON datagram format
+//   - Non-blocking sends
 package udp
 
 import (

@@ -1,3 +1,12 @@
+// Package grpc - gRPC Service Implementation
+// Implement Protocol Buffers RPCs cho internal services
+// Chức năng:
+//   - GetManga RPC: Lấy thông tin manga theo ID
+//   - SearchManga RPC: Tìm kiếm manga với filters
+//   - UpdateProgress RPC: Cập nhật reading progress
+//   - High-performance binary protocol
+//   - Type-safe communication với protobuf
+//   - Reflection support cho debugging
 package grpc
 
 import (
