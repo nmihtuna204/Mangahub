@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -58,14 +57,26 @@ func TestRegister(t *testing.T) {
 func TestRegisterMissingFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	svc := &mockAuthService{}
+	// Mock service that returns validation error
+	svc := &mockAuthService{
+		registerFunc: func(ctx context.Context, req models.RegisterRequest) (*models.UserProfile, error) {
+			// Simulate service-layer validation failure
+			return nil, &models.AppError{
+				StatusCode: http.StatusBadRequest,
+				Code:       models.ErrCodeBadRequest,
+				Message:    "validation failed",
+			}
+		},
+	}
+
 	handler := NewHandler(svc)
 	router := gin.Default()
 	router.POST("/auth/register", handler.Register)
 
 	body := map[string]string{
 		"username": "testuser",
-		// Missing email and password
+		"email":    "", // Empty email
+		"password": "", // Empty password
 	}
 	jsonBody, _ := json.Marshal(body)
 
@@ -129,9 +140,15 @@ func TestLoginSuccess(t *testing.T) {
 func TestLoginFail(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
+	// Mock service that returns authentication error
 	svc := &mockAuthService{
 		loginFunc: func(ctx context.Context, req models.LoginRequest) (*models.LoginResponse, error) {
-			return nil, errors.New("invalid credentials")
+			// Return proper AppError for invalid credentials
+			return nil, &models.AppError{
+				StatusCode: http.StatusUnauthorized,
+				Code:       models.ErrCodeUnauthorized,
+				Message:    "invalid credentials",
+			}
 		},
 	}
 

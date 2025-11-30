@@ -1,261 +1,331 @@
-# 🎌 MangaHub - Multi-Protocol Manga Tracking System
+# MangaHub - Net-Centric Programming Project
 
-A production-grade manga tracking and management system built with Go, featuring 5 different network protocols for comprehensive client-server communication.
+A comprehensive manga tracking system demonstrating all five network communication protocols: **HTTP, TCP, UDP, WebSocket, and gRPC**.
 
-## 📋 Project Overview
+## 📚 Overview
 
-MangaHub is a complete manga library management system that demonstrates advanced networking concepts and modern backend development practices. Users can track their manga reading progress, search for manga, manage their library, and synchronize data across multiple clients using various network protocols.
+MangaHub is a real-time manga synchronization platform built with Go, showcasing practical implementation of network programming concepts through an integrated multi-protocol architecture.
 
-## ✨ Features
+### Core Features
 
-### Completed (Phase 1 & 2)
+- **User Management**: Registration, authentication (JWT), profile management
+- **Manga Database**: Search, browse, detailed information
+- **Reading Progress Tracking**: Track current chapter, ratings, status
+- **Real-time Synchronization**: TCP broadcast to connected clients
+- **Chapter Notifications**: UDP push notifications to subscribers
+- **Community Chat**: WebSocket real-time discussions
+- **Internal Services**: gRPC for inter-service communication
+- **CLI Tool**: Command-line interface for all operations
 
-- ✅ **REST API Server** - Full HTTP API with JWT authentication
-- ✅ **User Authentication** - Secure registration and login with bcrypt
-- ✅ **Manga Management** - Search, filter, and browse manga catalog
-- ✅ **Reading Progress Tracking** - Track chapters read, ratings, and reading status
-- ✅ **Library Management** - Personal manga library with favorites
-- ✅ **Database Layer** - SQLite with migrations and seed data
-- ✅ **Configuration System** - YAML-based config for different environments
-- ✅ **Logging System** - Structured logging with multiple output formats
+---
 
-### Coming Soon (Phase 3-10)
+## ✅ All Phases Complete (10/10)
 
-- 🔄 TCP Sync Server - Real-time progress synchronization
-- 📡 UDP Notification System - Push notifications for manga updates
-- 💬 WebSocket Chat - Discussion rooms for manga
-- ⚡ gRPC Service - High-performance API
-- 🖥️ CLI Tool - Command-line interface for local management
-- 📱 Multi-client support with conflict resolution
+- ✅ **Phase 1**: Foundation & Database
+- ✅ **Phase 2**: HTTP REST API & Authentication
+- ✅ **Phase 3**: TCP Progress Sync Server
+- ✅ **Phase 4**: UDP Notification System
+- ✅ **Phase 5**: WebSocket Chat System
+- ✅ **Phase 6**: gRPC Internal Service
+- ✅ **Phase 7**: Protocol Integration & Cross-Communication
+- ✅ **Phase 8**: CLI Tool
+- ✅ **Phase 9**: Testing & Bug Fixes
+- ✅ **Phase 10**: Documentation & Demo Prep
 
-## 🏗️ Architecture
-
-```
-mangahub/
-├── cmd/                    # Application entrypoints
-│   ├── api-server/        # HTTP REST API server
-│   ├── tcp-server/        # TCP sync server (coming)
-│   ├── udp-server/        # UDP notification server (coming)
-│   ├── grpc-server/       # gRPC service (coming)
-│   └── cli/               # Command-line interface (coming)
-├── internal/              # Private application code
-│   ├── auth/             # Authentication & JWT
-│   ├── manga/            # Manga service
-│   ├── progress/         # Reading progress tracking
-│   └── user/             # User management
-├── pkg/                   # Public libraries
-│   ├── config/           # Configuration management
-│   ├── database/         # Database layer
-│   ├── logger/           # Logging utilities
-│   ├── models/           # Data models
-│   └── utils/            # Helper functions
-├── configs/              # Configuration files
-├── data/                 # Database and seed data
-└── tests/                # Test files
+## 🏗️ System Architecture
 
 ```
+┌─────────────────────────────────────────────────────────────────┐
+│                     CLIENT LAYER                                │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│  │  Web Browser │  │  CLI Tool    │  │ Mobile App   │          │
+│  └──────────────┘  └──────────────┘  └──────────────┘          │
+└──────────┬──────────────────────┬──────────────────┬────────────┘
+           │                      │                  │
+    ┌──────▼──────┐      ┌────────▼────────┐  ┌─────▼──────┐
+    │ HTTP REST   │      │  WebSocket      │  │ TCP Client │
+    │ :8080       │      │  :8080/ws/chat  │  │ :9090      │
+    └──────┬──────┘      └────────┬────────┘  └─────┬──────┘
+           │                      │                  │
+           └──────────┬───────────┴──────────────────┘
+                      │
+           ┌──────────▼──────────┐
+           │   Protocol Bridge   │ (Integration point)
+           └──────────┬──────────┘
+                      │
+         ┌────────────┼────────────┐
+         │            │            │
+    ┌────▼────┐  ┌────▼─────┐  ┌──▼────┐
+    │ UDP     │  │ gRPC     │  │ TCP   │
+    │ :9091   │  │ :9092    │  │ :9090 │
+    └────┬────┘  └────┬─────┘  └──┬────┘
+         │            │            │
+         └────────────┼────────────┘
+                      │
+           ┌──────────▼──────────┐
+           │  SQLite Database    │
+           │  (~/.mangahub/      │
+           │   data.db)          │
+           └─────────────────────┘
+```
+
+---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- Go 1.20 or higher
+- Go 1.19 or later
+- SQLite 3.x
 - Git
 
 ### Installation
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/nmihtuna204/Mangahub.git
-   cd Mangahub
-   ```
-
-2. **Install dependencies**
-   ```bash
-   go mod download
-   ```
-
-3. **Run the API server**
-   ```bash
-   go run cmd/api-server/main.go
-   ```
-
-The server will start on `http://localhost:8080`
-
-### Running Tests
-
-```powershell
-# Automated API tests
-.\test-api.ps1
-
-# Manual curl-style tests
-.\test-curl.ps1
-```
-
-## 📡 API Endpoints
-
-### Authentication
-- `POST /auth/register` - Register new user
-- `POST /auth/login` - Login and get JWT token
-
-### Manga (Public)
-- `GET /manga` - List manga with pagination
-  - Query params: `?limit=20&offset=0&q=search&status=ongoing&sort_by=rating`
-- `GET /manga/:id` - Get manga details
-
-### Library (Protected - requires JWT)
-- `POST /users/library` - Add manga to library
-- `GET /users/library` - Get user's manga library
-- `PUT /users/progress` - Update reading progress
-
-## 🔧 Configuration
-
-Configuration files are located in `configs/`:
-
-- `development.yaml` - Development environment
-- `production.yaml` - Production environment
-
-Key settings:
-- Server host and port
-- Database path and connection pooling
-- JWT secret and expiration
-- Protocol-specific ports (TCP, UDP, WebSocket, gRPC)
-- Logging configuration
-
-## 📚 API Usage Examples
-
-### Register User
 ```bash
-curl -X POST http://localhost:8080/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"username":"testuser","email":"test@example.com","password":"password123"}'
+git clone https://github.com/nmihtuna204/Mangahub.git
+cd Mangahub/mangahub
+go mod tidy
 ```
 
-### Login
+### Start All Services
+
 ```bash
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"testuser","password":"password123"}'
+# Terminal 1: HTTP API Server
+go run cmd/api-server/main.go
+
+# Terminal 2: TCP Sync Server
+go run cmd/tcp-server/main.go
+
+# Terminal 3: UDP Notifier
+go run cmd/udp-server/main.go
+
+# Terminal 4: gRPC Service
+go run cmd/grpc-server/main.go
 ```
 
-### List Manga
+### Build CLI Tool
+
 ```bash
-curl http://localhost:8080/manga?limit=10
+go build -o bin/mangahub ./cmd/cli
+./bin/mangahub --help
 ```
-
-### Add to Library (with JWT token)
-```bash
-curl -X POST http://localhost:8080/users/library \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"manga_id":"manga-id","current_chapter":5,"status":"reading"}'
-```
-
-## 🗄️ Database Schema
-
-### Users Table
-- User accounts with authentication
-- Profiles with display names and avatars
-- Role-based access control
-
-### Manga Table
-- Complete manga information
-- Genres (stored as JSON)
-- Ratings and publication details
-
-### Reading Progress Table
-- User's reading progress per manga
-- Current chapter and status
-- Ratings and notes
-- Sync version for conflict resolution
-
-## 🔐 Security Features
-
-- **Password Hashing**: bcrypt with configurable cost
-- **JWT Authentication**: HS256 signed tokens
-- **Token Expiration**: Configurable expiration times
-- **Protected Routes**: Middleware-based authorization
-- **Input Validation**: Struct validation with go-playground/validator
-
-## 🛠️ Technology Stack
-
-- **Language**: Go 1.20+
-- **Web Framework**: Gin
-- **Database**: SQLite (with glebarez/go-sqlite - pure Go)
-- **Authentication**: JWT (golang-jwt/jwt/v4)
-- **Configuration**: Viper
-- **Logging**: Logrus
-- **Validation**: go-playground/validator
-- **UUID Generation**: google/uuid
-
-## 📊 Project Status
-
-### Phase 1: Foundation ✅
-- Project structure
-- Configuration system
-- Database layer with migrations
-- Core models
-- Logging system
-
-### Phase 2: HTTP REST API ✅
-- Authentication service
-- Manga browsing
-- Library management
-- Progress tracking
-- JWT middleware
-
-### Phase 3-10: Coming Soon
-- TCP synchronization
-- UDP notifications
-- WebSocket chat
-- gRPC service
-- CLI tool
-- Integration testing
-- Production deployment
-
-## 🧪 Testing
-
-The project includes comprehensive test scripts:
-
-- **test-api.ps1**: Automated API endpoint testing
-- **test-curl.ps1**: Manual curl-style testing
-- **cmd/test-foundation**: Foundation layer testing
-
-All tests verify:
-- ✅ User registration and authentication
-- ✅ JWT token generation and validation
-- ✅ Manga listing and details
-- ✅ Library operations
-- ✅ Progress tracking
-- ✅ Authorization protection
-
-## 📝 Development Roadmap
-
-1. ✅ **Phase 1-2**: Foundation & REST API (COMPLETE)
-2. 🔄 **Phase 3**: TCP Sync Server
-3. 📅 **Phase 4**: UDP Notification System
-4. 📅 **Phase 5**: WebSocket Chat
-5. 📅 **Phase 6**: gRPC Service
-6. 📅 **Phase 7**: CLI Tool
-7. 📅 **Phase 8**: Integration Testing
-8. 📅 **Phase 9**: Production Optimization
-9. 📅 **Phase 10**: Documentation & Deployment
-
-## 👥 Contributing
-
-This is an educational project demonstrating network programming concepts. Feel free to fork and experiment!
-
-## 📄 License
-
-This project is for educational purposes.
-
-## 🙏 Acknowledgments
-
-- Built as a demonstration of multi-protocol network programming
-- Showcases modern Go backend development practices
-- Implements RESTful API design principles
 
 ---
 
-**Current Version**: v0.2.0 (Phase 2 Complete)  
-**Last Updated**: November 26, 2025
+## 📋 API Documentation
+
+### Authentication
+
+**Register**
+```http
+POST /auth/register
+Content-Type: application/json
+
+{
+  "username": "reader1",
+  "email": "reader@example.com",
+  "password": "secure123"
+}
+```
+
+**Login**
+```http
+POST /auth/login
+Content-Type: application/json
+
+{
+  "username": "reader1",
+  "password": "secure123"
+}
+
+Response:
+{
+  "success": true,
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIs..."
+  }
+}
+```
+
+### Manga Operations
+
+**Search Manga**
+```http
+GET /manga?q=one+piece&limit=10&offset=0
+```
+
+**Get Manga Details**
+```http
+GET /manga/one-piece
+```
+
+### Library Management
+
+**Add to Library**
+```http
+POST /users/library
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "manga_id": "one-piece",
+  "current_chapter": 0,
+  "status": "reading"
+}
+```
+
+**Get User Library**
+```http
+GET /users/library
+Authorization: Bearer {token}
+```
+
+**Update Reading Progress** ⭐ *Triggers all 5 protocols!*
+```http
+PUT /users/progress
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "manga_id": "one-piece",
+  "current_chapter": 100,
+  "status": "reading",
+  "rating": 9
+}
+```
+
+### WebSocket Chat
+
+**Connect to Chat Room**
+```javascript
+WebSocket ws://localhost:8080/ws/chat?room_id=one-piece
+Authorization: Bearer {token}
+
+Send messages:
+{
+  "message": "This manga is amazing!"
+}
+
+Receive broadcasts:
+{
+  "user_id": "user123",
+  "username": "reader1",
+  "message": "This manga is amazing!",
+  "timestamp": 1700000000,
+  "type": "message"
+}
+```
+
+---
+
+## 🔄 Protocol Integration Demo
+
+When user updates progress via HTTP:
+
+1. **HTTP** - REST API receives update request
+2. **🔌 Bridge** - Triggered on progress update
+3. **TCP** - Broadcast to sync clients: `{"user_id":"...", "manga_id":"...", "chapter":100}`
+4. **UDP** - Send notification: `{"type":"chapter_release", "message":"New progress update"}`
+5. **WebSocket** - Notify chat room members in real-time
+6. **gRPC** - Log to audit service via RPC call
+
+**Result:** Single API call triggers all 5 protocols!
+
+---
+
+## 📊 Database Schema
+
+### Users Table
+```sql
+CREATE TABLE users (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Manga Table
+```sql
+CREATE TABLE manga (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    author TEXT,
+    artist TEXT,
+    status TEXT,
+    genres TEXT,
+    total_chapters INTEGER,
+    rating REAL,
+    year INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Reading Progress Table
+```sql
+CREATE TABLE reading_progress (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    manga_id TEXT NOT NULL,
+    current_chapter INTEGER,
+    status TEXT,
+    rating INTEGER,
+    last_read_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, manga_id),
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(manga_id) REFERENCES manga(id)
+);
+```
+
+---
+
+## 🧪 Testing
+
+```bash
+# Run unit tests
+go test -v ./internal/auth
+
+# Run all tests
+go test -v ./...
+
+# Generate coverage report
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out
+```
+
+---
+
+## 🎓 Learning Outcomes
+
+This project demonstrates:
+
+- **Network Protocols**: Practical implementation of HTTP, TCP, UDP, WebSocket, and gRPC
+- **Concurrency**: Goroutines, channels, and synchronization patterns
+- **Database Design**: SQLite schema design and query optimization
+- **API Design**: RESTful principles and error handling
+- **Real-time Communication**: Broadcasting and event-driven architecture
+- **CLI Development**: Cobra framework for command-line tools
+- **Testing**: Unit and integration testing strategies
+
+---
+
+## 📝 License
+
+MIT License - See LICENSE file for details
+
+---
+
+## 👨‍💻 Authors
+
+- Your Name
+- Collaborators
+
+---
+
+## 📞 Support
+
+For issues, please open a GitHub issue or contact the development team.
+
