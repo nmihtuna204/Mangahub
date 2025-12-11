@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/yourusername/mangahub/pkg/models"
+	"mangahub/pkg/models"
 	"golang.org/x/crypto/bcrypt"
 )
 

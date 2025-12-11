@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	pb "github.com/yourusername/mangahub/internal/grpc/pb"
+	pb "mangahub/internal/grpc/pb"
 )
 
 func TestHTTPHealthCheck(t *testing.T) {

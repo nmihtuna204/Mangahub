@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package mangahub.v1;
 
-option go_package = "github.com/yourusername/mangahub/internal/grpc/pb;pb";
+option go_package = "github.com/nmihtuna204/mangahub/internal/grpc/pb;pb";
 
 // Manga service for internal gRPC communication
 service MangaService {
