@@ -1,0 +1,35 @@
+server:
+  host: 0.0.0.0
+  http_port: 8080
+  read_timeout: 15s
+  write_timeout: 15s
+  idle_timeout: 60s
+  mode: release
+
+tcp:
+  host: 0.0.0.0
+  port: 9090
+
+udp:
+  host: 0.0.0.0
+  port: 9091
+
+grpc:
+  host: 0.0.0.0
+  port: 9092
+
+database:
+  path: /app/data/mangahub.db
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 5m
+
+jwt:
+  secret: your-secret-key-change-in-production
+  issuer: mangahub
+  expiration: 86400
+
+logging:
+  level: info
+  format: json
+  output: stdout

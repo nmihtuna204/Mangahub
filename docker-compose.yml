@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  # HTTP API Server + WebSocket
+  api-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mangahub-api
+    command: /app/api-server
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configs:/app/configs
+      - ./data:/app/data
+    environment:
+      - GIN_MODE=release
+    networks:
+      - mangahub-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # TCP Sync Server
+  tcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mangahub-tcp
+    command: /app/tcp-server
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./configs:/app/configs
+    networks:
+      - mangahub-network
+    depends_on:
+      - api-server
+
+  # UDP Notification Server
+  udp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mangahub-udp
+    command: /app/udp-server
+    ports:
+      - "9091:9091/udp"
+    volumes:
+      - ./configs:/app/configs
+    networks:
+      - mangahub-network
+    depends_on:
+      - api-server
+
+  # gRPC Service
+  grpc-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mangahub-grpc
+    command: /app/grpc-server
+    ports:
+      - "9092:9092"
+    volumes:
+      - ./configs:/app/configs
+      - ./data:/app/data
+    networks:
+      - mangahub-network
+    depends_on:
+      - api-server
+
+networks:
+  mangahub-network:
+    driver: bridge
+
+volumes:
+  mangahub-data:

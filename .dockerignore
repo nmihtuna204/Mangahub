@@ -1,0 +1,50 @@
+# Binaries
+/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output
+*.out
+
+# Go workspace file
+go.work
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+/data/*.db
+/data/*.db-journal
+/data/*.db-shm
+/data/*.db-wal
+
+# Logs
+*.log
+
+# Env files
+.env
+.env.local
+
+# Docker volumes
+docker-volumes/
+
+# Coverage
+coverage.out
+coverage.html
+
+# Temp files
+tmp/
+temp/
