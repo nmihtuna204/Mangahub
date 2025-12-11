@@ -5,8 +5,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"github.com/yourusername/mangahub/internal/auth"
-	"github.com/yourusername/mangahub/pkg/logger"
+	"mangahub/internal/auth"
+	"mangahub/pkg/logger"
 )
 
 var upgrader = websocket.Upgrader{

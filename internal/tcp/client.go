@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/yourusername/mangahub/pkg/logger"
+	"mangahub/pkg/logger"
 )
 
 type Client struct {

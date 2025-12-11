@@ -15,9 +15,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	pb "github.com/yourusername/mangahub/internal/grpc/pb"
-	"github.com/yourusername/mangahub/pkg/logger"
-	"github.com/yourusername/mangahub/pkg/models"
+	pb "mangahub/internal/grpc/pb"
+	"mangahub/pkg/logger"
+	"mangahub/pkg/models"
 )
 
 type MangaServiceServer struct {

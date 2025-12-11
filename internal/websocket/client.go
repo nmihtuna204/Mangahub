@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/yourusername/mangahub/pkg/logger"
+	"mangahub/pkg/logger"
 )
 
 const (

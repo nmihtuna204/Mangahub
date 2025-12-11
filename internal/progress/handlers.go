@@ -4,8 +4,8 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/yourusername/mangahub/internal/auth"
-	"github.com/yourusername/mangahub/pkg/models"
+	"mangahub/internal/auth"
+	"mangahub/pkg/models"
 )
 
 type ProtocolBridge interface {

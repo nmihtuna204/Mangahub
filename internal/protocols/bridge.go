@@ -7,6 +7,7 @@
 //   - WebSocket: Notify chat rooms
 //   - gRPC: Log audit trail
 //   - HTTP: Tiếp nhận request ban đầu
+//
 // Đây là core feature thể hiện multi-protocol integration!
 package protocols
 
@@ -16,10 +17,10 @@ import (
 	"fmt"
 	"time"
 
-	pb "github.com/yourusername/mangahub/internal/grpc/pb"
-	"github.com/yourusername/mangahub/internal/tcp"
-	"github.com/yourusername/mangahub/internal/udp"
-	"github.com/yourusername/mangahub/pkg/logger"
+	pb "mangahub/internal/grpc/pb"
+	"mangahub/internal/tcp"
+	"mangahub/internal/udp"
+	"mangahub/pkg/logger"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

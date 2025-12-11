@@ -16,7 +16,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/yourusername/mangahub/pkg/logger"
+	"mangahub/pkg/logger"
 )
 
 type ClientID string
@@ -28,14 +28,14 @@ type client struct {
 }
 
 type ProgressSyncServer struct {
-	Addr        string
-	listener    net.Listener
-	clientsMu   sync.RWMutex
-	clients     map[ClientID]*client
-	Broadcast   chan ProgressUpdate
-	register    chan *client
-	unregister  chan *client
-	stop        chan struct{}
+	Addr       string
+	listener   net.Listener
+	clientsMu  sync.RWMutex
+	clients    map[ClientID]*client
+	Broadcast  chan ProgressUpdate
+	register   chan *client
+	unregister chan *client
+	stop       chan struct{}
 }
 
 func NewProgressSyncServer(host string, port int) *ProgressSyncServer {
@@ -188,4 +188,3 @@ func (s *ProgressSyncServer) Stop() error {
 	}
 	return nil
 }
-

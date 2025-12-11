@@ -10,7 +10,7 @@ package manga
 import (
 	"context"
 
-	"github.com/yourusername/mangahub/pkg/models"
+	"mangahub/pkg/models"
 )
 
 type Service interface {

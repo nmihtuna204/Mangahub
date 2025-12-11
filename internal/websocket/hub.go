@@ -12,7 +12,7 @@ package websocket
 import (
 	"sync"
 
-	"github.com/yourusername/mangahub/pkg/logger"
+	"mangahub/pkg/logger"
 )
 
 type Hub struct {

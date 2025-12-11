@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"mangahub/pkg/models"
 	"github.com/stretchr/testify/assert"
-	"github.com/yourusername/mangahub/pkg/models"
 )
 
 func TestRegister(t *testing.T) {

@@ -6,15 +6,15 @@ import (
 	"net"
 	"time"
 
-	"github.com/yourusername/mangahub/pkg/logger"
+	"mangahub/pkg/logger"
 )
 
 // Client represents a UDP notification client
 type Client struct {
-	ServerAddr string
-	conn       *net.UDPConn
+	ServerAddr     string
+	conn           *net.UDPConn
 	OnNotification func(Notification)
-	stop       chan struct{}
+	stop           chan struct{}
 }
 
 // NewClient creates a new UDP client

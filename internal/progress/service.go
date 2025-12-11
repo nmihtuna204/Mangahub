@@ -10,8 +10,8 @@ package progress
 import (
 	"context"
 
-	"github.com/yourusername/mangahub/pkg/models"
-	"github.com/yourusername/mangahub/pkg/utils"
+	"mangahub/pkg/models"
+	"mangahub/pkg/utils"
 )
 
 type Service interface {

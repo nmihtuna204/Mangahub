@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yourusername/mangahub/pkg/models"
+	"mangahub/pkg/models"
 )
 
 type Repository interface {

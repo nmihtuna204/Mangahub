@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/yourusername/mangahub/pkg/config"
-	"github.com/yourusername/mangahub/pkg/database"
-	"github.com/yourusername/mangahub/pkg/logger"
+	"mangahub/pkg/config"
+	"mangahub/pkg/database"
+	"mangahub/pkg/logger"
 )
 
 func main() {

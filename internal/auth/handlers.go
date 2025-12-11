@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/yourusername/mangahub/pkg/models"
+	"mangahub/pkg/models"
 )
 
 type Handler struct {

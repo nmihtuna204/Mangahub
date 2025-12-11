@@ -1,4 +1,4 @@
-	package grpc
+package grpc
 
 import (
 	"context"
@@ -8,8 +8,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	pb "github.com/yourusername/mangahub/internal/grpc/pb"
-	"github.com/yourusername/mangahub/pkg/logger"
+	pb "mangahub/internal/grpc/pb"
+	"mangahub/pkg/logger"
 )
 
 type Client struct {

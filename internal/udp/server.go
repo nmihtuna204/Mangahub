@@ -15,7 +15,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/yourusername/mangahub/pkg/logger"
+	"mangahub/pkg/logger"
 )
 
 // NotificationServer manages UDP notification broadcasting
@@ -94,7 +94,7 @@ func (s *NotificationServer) runHub() {
 // listenForRegistrations handles incoming UDP messages (client registration)
 func (s *NotificationServer) listenForRegistrations() {
 	buffer := make([]byte, 2048)
-	
+
 	for {
 		select {
 		case <-s.stop:

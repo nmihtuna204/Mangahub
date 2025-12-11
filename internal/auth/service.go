@@ -15,8 +15,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/google/uuid"
-	"github.com/yourusername/mangahub/pkg/models"
-	"github.com/yourusername/mangahub/pkg/utils"
+	"mangahub/pkg/models"
+	"mangahub/pkg/utils"
 )
 
 type Service interface {
