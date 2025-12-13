@@ -15,7 +15,6 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
 	"mangahub/internal/auth"
 	"mangahub/internal/manga"
 	"mangahub/internal/progress"
@@ -25,6 +24,8 @@ import (
 	"mangahub/pkg/config"
 	"mangahub/pkg/database"
 	"mangahub/pkg/logger"
+
+	"github.com/gin-gonic/gin"
 )
 
 func main() {
@@ -107,17 +108,44 @@ func main() {
 
 	api := router.Group("/")
 
+	// Public auth routes
 	api.POST("/auth/register", authHandler.Register)
 	api.POST("/auth/login", authHandler.Login)
 
+	// Public manga routes
 	api.GET("/manga", mangaHandler.ListManga)
 	api.GET("/manga/:id", mangaHandler.GetManga)
+
+	// Health check endpoint
+	api.GET("/health", func(c *gin.Context) {
+		dbHealth, err := db.HealthCheck()
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status":   "unhealthy",
+				"database": fmt.Sprintf("error: %v", err),
+				"server":   "running",
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":   "ok",
+			"database": dbHealth,
+			"server":   "running",
+		})
+	})
 
 	protected := api.Group("/")
 	protected.Use(auth.JWTMiddleware(authSvc))
 
+	// Protected auth routes
+	protected.GET("/auth/me", authHandler.GetMe)
+	protected.POST("/auth/logout", authHandler.Logout)
+	protected.POST("/auth/refresh", authHandler.RefreshToken)
+
+	// Library endpoints
 	protected.POST("/users/library", progressHandler.AddToLibrary)
 	protected.GET("/users/library", progressHandler.GetLibrary)
+	protected.DELETE("/users/library/:manga_id", progressHandler.RemoveFromLibrary)
 	protected.PUT("/users/progress", progressHandler.UpdateProgress)
 
 	// WebSocket chat endpoint (requires JWT)
