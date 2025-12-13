@@ -6,6 +6,7 @@
 //   - API endpoints cho manga search, library management
 //   - Tích hợp với tất cả 5 protocols thông qua Protocol Bridge
 //   - WebSocket chat server endpoint
+//   - Phase 2: Rating, Comment, Leaderboard APIs
 //
 // Port: 8080
 package main
@@ -16,9 +17,13 @@ import (
 	"net/http"
 
 	"mangahub/internal/auth"
+	"mangahub/internal/chat"
+	"mangahub/internal/comment"
+	"mangahub/internal/leaderboard"
 	"mangahub/internal/manga"
 	"mangahub/internal/progress"
 	"mangahub/internal/protocols"
+	"mangahub/internal/rating"
 	"mangahub/internal/udp"
 	"mangahub/internal/websocket"
 	"mangahub/pkg/config"
@@ -99,6 +104,29 @@ func main() {
 	go wsHub.Run()
 	wsHandler := websocket.NewHandler(wsHub)
 
+	// ================================================
+	// Phase 2: Social Features Initialization
+	// Rating, Comment, Leaderboard, Chat persistence
+	// ================================================
+
+	// Initialize Chat repository for message persistence
+	chatRepo := chat.NewRepository(db.DB)
+	wsHub.SetChatRepository(chatRepo) // Enable chat persistence
+
+	// Initialize Rating system
+	ratingRepo := rating.NewRepository(db.DB)
+	ratingSvc := rating.NewService(ratingRepo)
+	ratingHandler := rating.NewHandler(ratingSvc)
+
+	// Initialize Comment system
+	commentRepo := comment.NewRepository(db.DB)
+	commentSvc := comment.NewService(commentRepo)
+	commentHandler := comment.NewHandler(commentSvc)
+
+	// Initialize Leaderboard system
+	leaderboardSvc := leaderboard.NewService(db.DB)
+	leaderboardHandler := leaderboard.NewHandler(leaderboardSvc)
+
 	if cfg.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -148,6 +176,43 @@ func main() {
 	protected.DELETE("/users/library/:manga_id", progressHandler.RemoveFromLibrary)
 	protected.PUT("/users/progress", progressHandler.UpdateProgress)
 
+	// ================================================
+	// Phase 2: Social Features Routes
+	// ================================================
+
+	// Rating routes (authenticated)
+	// POST /manga/:id/ratings - Submit or update rating
+	// DELETE /manga/:id/ratings - Delete user's rating
+	protected.POST("/manga/:id/ratings", ratingHandler.SubmitRating)
+	protected.DELETE("/manga/:id/ratings", ratingHandler.DeleteRating)
+
+	// Rating routes (public - view only)
+	// GET /manga/:id/ratings - Get ratings summary
+	api.GET("/manga/:id/ratings", ratingHandler.GetRatings)
+
+	// Comment routes (authenticated)
+	// POST /manga/:id/comments - Create new comment
+	// PUT /comments/:id - Update comment
+	// DELETE /comments/:id - Delete comment
+	// POST /comments/:id/like - Like comment
+	// DELETE /comments/:id/like - Unlike comment
+	protected.POST("/manga/:id/comments", commentHandler.CreateComment)
+	protected.PUT("/comments/:id", commentHandler.UpdateComment)
+	protected.DELETE("/comments/:id", commentHandler.DeleteComment)
+	protected.POST("/comments/:id/like", commentHandler.LikeComment)
+	protected.DELETE("/comments/:id/like", commentHandler.UnlikeComment)
+
+	// Comment routes (public - view only)
+	api.GET("/manga/:id/comments", commentHandler.GetComments)
+
+	// Leaderboard routes (public)
+	// GET /leaderboards/manga - Top rated manga
+	// GET /leaderboards/users - Most active users  
+	// GET /leaderboards/trending - Trending manga
+	api.GET("/leaderboards/manga", leaderboardHandler.GetTopRatedManga)
+	api.GET("/leaderboards/users", leaderboardHandler.GetMostActiveUsers)
+	api.GET("/leaderboards/trending", leaderboardHandler.GetTrendingManga)
+
 	// WebSocket chat endpoint (requires JWT)
 	protected.GET("/ws/chat", wsHandler.ServeWS)
 
@@ -167,6 +232,7 @@ func main() {
 	if protocolBridge != nil {
 		logger.Infof("🔄 Phase 7: All 5 protocols integrated (HTTP + TCP + UDP + WebSocket + gRPC)")
 	}
+	logger.Infof("✨ Phase 2: Social features enabled (Rating, Comment, Leaderboard, Chat persistence)")
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Fatalf("server error: %v", err)

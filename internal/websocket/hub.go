@@ -7,14 +7,19 @@
 //   - Join/leave notifications
 //   - Bidirectional communication
 //   - Concurrent-safe với mutex
+//   - Message persistence to database (Phase 2)
 package websocket
 
 import (
+	"context"
 	"sync"
 
+	"mangahub/internal/chat"
 	"mangahub/pkg/logger"
 )
 
+// Hub manages WebSocket connections and message routing
+// Integrates with chat.Repository for message persistence
 type Hub struct {
 	rooms      map[string]map[*Client]bool
 	mu         sync.RWMutex
@@ -22,8 +27,14 @@ type Hub struct {
 	unregister chan *Client
 	broadcast  chan RoomMessage
 	stop       chan struct{}
+	
+	// Chat repository for message persistence (Phase 2)
+	// Optional: if nil, messages are not persisted
+	chatRepo   chat.Repository
 }
 
+// NewHub creates a new hub without persistence
+// Use SetChatRepository to enable message persistence
 func NewHub() *Hub {
 	return &Hub{
 		rooms:      make(map[string]map[*Client]bool),
@@ -32,6 +43,13 @@ func NewHub() *Hub {
 		broadcast:  make(chan RoomMessage, 256),
 		stop:       make(chan struct{}),
 	}
+}
+
+// SetChatRepository sets the chat repository for message persistence
+// Call this after creating the hub to enable persistence
+func (h *Hub) SetChatRepository(repo chat.Repository) {
+	h.chatRepo = repo
+	logger.Info("Chat message persistence enabled")
 }
 
 func (h *Hub) Run() {
@@ -88,6 +106,21 @@ func (h *Hub) unregisterClient(c *Client) {
 }
 
 func (h *Hub) broadcastMessage(msg RoomMessage) {
+	// Persist message to database if repository is configured
+	// Chỉ lưu message type "message", không lưu join/leave notifications
+	if h.chatRepo != nil && msg.Type == "message" {
+		chatMsg := &chat.Message{
+			RoomID:      msg.RoomID,
+			UserID:      msg.UserID,
+			Content:     msg.Message,
+			MessageType: msg.Type,
+		}
+		if err := h.chatRepo.SaveMessage(context.Background(), chatMsg); err != nil {
+			logger.Errorf("Failed to persist chat message: %v", err)
+			// Continue broadcasting even if persistence fails
+		}
+	}
+
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -137,6 +170,33 @@ func (h *Hub) GetRoomClients(roomID string) []string {
 		}
 	}
 	return clients
+}
+
+// GetRoomHistory retrieves message history for a room
+// Được gọi khi user join room để load tin nhắn cũ
+func (h *Hub) GetRoomHistory(ctx context.Context, roomID string, limit, offset int) (*chat.MessageListResponse, error) {
+	if h.chatRepo == nil {
+		return &chat.MessageListResponse{
+			Messages: []chat.Message{},
+			Total:    0,
+			Limit:    limit,
+			Offset:   offset,
+			HasMore:  false,
+		}, nil
+	}
+
+	messages, total, err := h.chatRepo.GetMessagesByRoom(ctx, roomID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+
+	return &chat.MessageListResponse{
+		Messages: messages,
+		Total:    total,
+		Limit:    limit,
+		Offset:   offset,
+		HasMore:  offset+len(messages) < total,
+	}, nil
 }
 
 func (h *Hub) Stop() {
