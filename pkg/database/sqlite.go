@@ -279,6 +279,55 @@ func (db *DB) Migrate() error {
 			UNIQUE(manga_id)
 		)`,
 
+		// ===== Phase 2 New Tables =====
+
+		// Comments table for chapter discussions
+		// Supports threaded replies via parent_id
+		// Spoiler flag for content warnings
+		`CREATE TABLE IF NOT EXISTS comments (
+			id TEXT PRIMARY KEY,
+			manga_id TEXT NOT NULL,
+			chapter_number INTEGER,
+			user_id TEXT NOT NULL,
+			content TEXT NOT NULL,
+			is_spoiler BOOLEAN DEFAULT 0,
+			parent_id TEXT,
+			likes_count INTEGER DEFAULT 0,
+			is_edited BOOLEAN DEFAULT 0,
+			is_deleted BOOLEAN DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (manga_id) REFERENCES manga(id) ON DELETE CASCADE,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY (parent_id) REFERENCES comments(id) ON DELETE SET NULL
+		)`,
+
+		// Comment likes tracking (prevent duplicate likes)
+		`CREATE TABLE IF NOT EXISTS comment_likes (
+			id TEXT PRIMARY KEY,
+			comment_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+			UNIQUE(comment_id, user_id)
+		)`,
+
+		// User activities for activity feed
+		// Tracks all user actions: read, rate, comment, add_library, etc.
+		`CREATE TABLE IF NOT EXISTS activities (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			action_type TEXT NOT NULL,
+			manga_id TEXT,
+			chapter_number INTEGER,
+			details TEXT,
+			is_public BOOLEAN DEFAULT 1,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY (manga_id) REFERENCES manga(id) ON DELETE SET NULL
+		)`,
+
 		// Indexes for new tables
 		`CREATE INDEX IF NOT EXISTS idx_chat_messages_room ON chat_messages(room_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_messages_user ON chat_messages(user_id)`,
@@ -296,6 +345,19 @@ func (db *DB) Migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_external_ids_manga ON manga_external_ids(manga_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_external_ids_mangadex ON manga_external_ids(mangadex_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_external_ids_mal ON manga_external_ids(mal_id)`,
+
+		// Phase 2 indexes
+		`CREATE INDEX IF NOT EXISTS idx_comments_manga ON comments(manga_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_comments_chapter ON comments(manga_id, chapter_number)`,
+		`CREATE INDEX IF NOT EXISTS idx_comments_user ON comments(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_comments_created ON comments(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_comment_likes_comment ON comment_likes(comment_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_comment_likes_user ON comment_likes(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_activities_user ON activities(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_activities_manga ON activities(manga_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_activities_type ON activities(action_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_activities_created ON activities(created_at DESC)`,
 	}
 
 	for _, migration := range migrations {
