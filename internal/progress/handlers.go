@@ -85,6 +85,41 @@ func (h *Handler) GetLibrary(c *gin.Context) {
 		models.NewSuccessResponse(list, "user library"))
 }
 
+// DELETE /users/library/:manga_id
+func (h *Handler) RemoveFromLibrary(c *gin.Context) {
+	user := auth.GetCurrentUser(c)
+	if user == nil {
+		c.JSON(http.StatusUnauthorized,
+			models.NewErrorResponse(models.ErrCodeUnauthorized, "unauthorized", nil))
+		return
+	}
+
+	mangaID := c.Param("manga_id")
+	if mangaID == "" {
+		c.JSON(http.StatusBadRequest,
+			models.NewErrorResponse(models.ErrCodeBadRequest, "manga_id is required", nil))
+		return
+	}
+
+	err := h.svc.Delete(c.Request.Context(), user.ID, mangaID)
+	if err != nil {
+		if appErr, ok := err.(*models.AppError); ok {
+			c.JSON(appErr.StatusCode,
+				models.NewErrorResponse(appErr.Code, appErr.Message, appErr.Details))
+			return
+		}
+		c.JSON(http.StatusInternalServerError,
+			models.NewErrorResponse(models.ErrCodeInternal, "unexpected error", nil))
+		return
+	}
+
+	c.JSON(http.StatusOK,
+		models.NewSuccessResponse(map[string]interface{}{
+			"manga_id": mangaID,
+			"removed":  true,
+		}, "manga removed from library"))
+}
+
 // PUT /users/progress
 func (h *Handler) UpdateProgress(c *gin.Context) {
 	user := auth.GetCurrentUser(c)

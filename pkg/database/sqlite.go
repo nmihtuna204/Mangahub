@@ -12,6 +12,8 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	_ "github.com/glebarez/go-sqlite"
@@ -32,6 +34,12 @@ type Config struct {
 
 // NewDB creates a new database connection
 func NewDB(config Config) (*DB, error) {
+	// Ensure directory exists
+	dir := filepath.Dir(config.Path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create database directory: %w", err)
+	}
+
 	// Open database connection
 	sqlDB, err := sql.Open("sqlite", config.Path+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)")
 	if err != nil {
@@ -157,6 +165,137 @@ func (db *DB) Migrate() error {
 		`CREATE TRIGGER IF NOT EXISTS manga_fts_delete AFTER DELETE ON manga BEGIN
 			DELETE FROM manga_fts WHERE id = old.id;
 		END`,
+
+		// ===== Phase 0 New Tables =====
+
+		// Chat messages table for real-time chat
+		`CREATE TABLE IF NOT EXISTS chat_messages (
+			id TEXT PRIMARY KEY,
+			room_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			content TEXT NOT NULL,
+			message_type TEXT DEFAULT 'text',
+			reply_to_id TEXT,
+			edited BOOLEAN DEFAULT 0,
+			deleted BOOLEAN DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		)`,
+
+		// Chat rooms table
+		`CREATE TABLE IF NOT EXISTS chat_rooms (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			room_type TEXT DEFAULT 'public',
+			manga_id TEXT,
+			owner_id TEXT NOT NULL,
+			description TEXT,
+			max_members INTEGER DEFAULT 100,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (manga_id) REFERENCES manga(id) ON DELETE SET NULL,
+			FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+		)`,
+
+		// Chat room members
+		`CREATE TABLE IF NOT EXISTS chat_room_members (
+			id TEXT PRIMARY KEY,
+			room_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			role TEXT DEFAULT 'member',
+			joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			last_read_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			notifications_enabled BOOLEAN DEFAULT 1,
+			FOREIGN KEY (room_id) REFERENCES chat_rooms(id) ON DELETE CASCADE,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+			UNIQUE(room_id, user_id)
+		)`,
+
+		// Manga ratings table
+		`CREATE TABLE IF NOT EXISTS manga_ratings (
+			id TEXT PRIMARY KEY,
+			manga_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			overall_rating REAL NOT NULL,
+			story_rating REAL,
+			art_rating REAL,
+			character_rating REAL,
+			enjoyment_rating REAL,
+			review_text TEXT,
+			is_spoiler BOOLEAN DEFAULT 0,
+			helpful_count INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (manga_id) REFERENCES manga(id) ON DELETE CASCADE,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+			UNIQUE(manga_id, user_id)
+		)`,
+
+		// Achievements table
+		`CREATE TABLE IF NOT EXISTS achievements (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE,
+			description TEXT NOT NULL,
+			category TEXT NOT NULL,
+			tier TEXT DEFAULT 'bronze',
+			points INTEGER DEFAULT 10,
+			icon_url TEXT,
+			requirement_type TEXT NOT NULL,
+			requirement_value INTEGER NOT NULL,
+			is_active BOOLEAN DEFAULT 1,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		// User achievements (earned achievements)
+		`CREATE TABLE IF NOT EXISTS user_achievements (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			achievement_id TEXT NOT NULL,
+			progress INTEGER DEFAULT 0,
+			unlocked BOOLEAN DEFAULT 0,
+			unlocked_at DATETIME,
+			notified BOOLEAN DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY (achievement_id) REFERENCES achievements(id) ON DELETE CASCADE,
+			UNIQUE(user_id, achievement_id)
+		)`,
+
+		// External IDs for manga cross-referencing
+		`CREATE TABLE IF NOT EXISTS manga_external_ids (
+			id TEXT PRIMARY KEY,
+			manga_id TEXT NOT NULL,
+			mangadex_id TEXT,
+			anilist_id INTEGER,
+			mal_id INTEGER,
+			kitsu_id TEXT,
+			primary_source TEXT DEFAULT 'mangadex',
+			last_synced_at DATETIME,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (manga_id) REFERENCES manga(id) ON DELETE CASCADE,
+			UNIQUE(manga_id)
+		)`,
+
+		// Indexes for new tables
+		`CREATE INDEX IF NOT EXISTS idx_chat_messages_room ON chat_messages(room_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_messages_user ON chat_messages(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_messages_created ON chat_messages(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_rooms_type ON chat_rooms(room_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_rooms_manga ON chat_rooms(manga_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_room_members_room ON chat_room_members(room_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_room_members_user ON chat_room_members(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_ratings_manga ON manga_ratings(manga_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_ratings_user ON manga_ratings(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_ratings_overall ON manga_ratings(overall_rating DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_achievements_category ON achievements(category)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_achievements_user ON user_achievements(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_achievements_unlocked ON user_achievements(unlocked)`,
+		`CREATE INDEX IF NOT EXISTS idx_external_ids_manga ON manga_external_ids(manga_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_external_ids_mangadex ON manga_external_ids(mangadex_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_external_ids_mal ON manga_external_ids(mal_id)`,
 	}
 
 	for _, migration := range migrations {
@@ -171,4 +310,44 @@ func (db *DB) Migrate() error {
 // BeginTx starts a new transaction
 func (db *DB) BeginTx() (*sql.Tx, error) {
 	return db.Begin()
+}
+
+// HealthCheck verifies database connectivity and returns status info
+func (db *DB) HealthCheck() (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+
+	// Test connection with ping
+	start := time.Now()
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("database ping failed: %w", err)
+	}
+	result["ping_latency_ms"] = time.Since(start).Milliseconds()
+	result["connected"] = true
+
+	// Get some basic stats
+	stats := db.Stats()
+	result["open_connections"] = stats.OpenConnections
+	result["in_use"] = stats.InUse
+	result["idle"] = stats.Idle
+	result["wait_count"] = stats.WaitCount
+	result["max_open_connections"] = stats.MaxOpenConnections
+
+	// Quick query test
+	var tableCount int
+	err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").Scan(&tableCount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query tables: %w", err)
+	}
+	result["table_count"] = tableCount
+
+	// Get database file size (if possible)
+	var pageCount, pageSize int64
+	if err := db.QueryRow("PRAGMA page_count").Scan(&pageCount); err == nil {
+		if err := db.QueryRow("PRAGMA page_size").Scan(&pageSize); err == nil {
+			result["database_size_bytes"] = pageCount * pageSize
+		}
+	}
+
+	result["status"] = "healthy"
+	return result, nil
 }

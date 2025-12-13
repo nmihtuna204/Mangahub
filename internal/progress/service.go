@@ -17,6 +17,7 @@ import (
 type Service interface {
 	Update(ctx context.Context, userID string, req models.UpdateProgressRequest) (*models.ReadingProgress, error)
 	List(ctx context.Context, userID string) ([]models.ProgressWithManga, error)
+	Delete(ctx context.Context, userID, mangaID string) error
 }
 
 type service struct {
@@ -36,4 +37,15 @@ func (s *service) Update(ctx context.Context, userID string, req models.UpdatePr
 
 func (s *service) List(ctx context.Context, userID string) ([]models.ProgressWithManga, error) {
 	return s.repo.ListByUser(ctx, userID)
+}
+
+func (s *service) Delete(ctx context.Context, userID, mangaID string) error {
+	if mangaID == "" {
+		return models.NewAppError(models.ErrCodeValidation, "manga_id is required", 400, nil)
+	}
+	err := s.repo.Delete(ctx, userID, mangaID)
+	if err != nil {
+		return models.NewAppError(models.ErrCodeNotFound, "manga not found in library", 404, err)
+	}
+	return nil
 }
