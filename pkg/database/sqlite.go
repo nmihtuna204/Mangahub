@@ -63,6 +63,11 @@ func NewDB(config Config) (*DB, error) {
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
+	// Seed initial data if empty
+	if err := db.Seed(); err != nil {
+		return nil, fmt.Errorf("failed to seed database: %w", err)
+	}
+
 	return db, nil
 }
 
@@ -328,6 +333,22 @@ func (db *DB) Migrate() error {
 			FOREIGN KEY (manga_id) REFERENCES manga(id) ON DELETE SET NULL
 		)`,
 
+		// Activity feed for user actions (chapter reads, ratings, completions)
+		`CREATE TABLE IF NOT EXISTS activity_feed (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			username TEXT NOT NULL,
+			activity_type TEXT NOT NULL,
+			manga_id TEXT NOT NULL,
+			manga_title TEXT NOT NULL,
+			chapter_number INTEGER,
+			rating REAL,
+			comment_text TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY (manga_id) REFERENCES manga(id) ON DELETE CASCADE
+		)`,
+
 		// Indexes for new tables
 		`CREATE INDEX IF NOT EXISTS idx_chat_messages_room ON chat_messages(room_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_messages_user ON chat_messages(user_id)`,
@@ -358,6 +379,103 @@ func (db *DB) Migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_activities_manga ON activities(manga_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_activities_type ON activities(action_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_activities_created ON activities(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_feed_user ON activity_feed(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_feed_manga ON activity_feed(manga_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_activity_feed_created ON activity_feed(created_at DESC)`,
+
+		// ===== Phase 3 New Tables =====
+
+		// Daily reading statistics for streak and heatmap tracking
+		`CREATE TABLE IF NOT EXISTS daily_stats (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			date DATE NOT NULL,
+			chapters_read INTEGER DEFAULT 0,
+			pages_read INTEGER DEFAULT 0,
+			time_minutes INTEGER DEFAULT 0,
+			manga_count INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+			UNIQUE(user_id, date)
+		)`,
+
+		// Chapter reading history for detailed analytics
+		`CREATE TABLE IF NOT EXISTS chapter_history (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			manga_id TEXT NOT NULL,
+			manga_title TEXT,
+			chapter_number INTEGER NOT NULL,
+			pages_read INTEGER DEFAULT 0,
+			time_minutes INTEGER DEFAULT 0,
+			read_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY (manga_id) REFERENCES manga(id) ON DELETE CASCADE
+		)`,
+
+		// Custom manga lists
+		`CREATE TABLE IF NOT EXISTS custom_lists (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT,
+			icon_emoji TEXT,
+			is_public BOOLEAN DEFAULT 0,
+			is_default BOOLEAN DEFAULT 0,
+			sort_order INTEGER DEFAULT 0,
+			manga_count INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		)`,
+
+		// Custom list items (manga in lists)
+		`CREATE TABLE IF NOT EXISTS custom_list_items (
+			id TEXT PRIMARY KEY,
+			list_id TEXT NOT NULL,
+			manga_id TEXT NOT NULL,
+			sort_order INTEGER DEFAULT 0,
+			notes TEXT,
+			added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (list_id) REFERENCES custom_lists(id) ON DELETE CASCADE,
+			FOREIGN KEY (manga_id) REFERENCES manga(id) ON DELETE CASCADE,
+			UNIQUE(list_id, manga_id)
+		)`,
+
+		// User preferences
+		`CREATE TABLE IF NOT EXISTS user_preferences (
+			user_id TEXT PRIMARY KEY,
+			theme TEXT DEFAULT 'dracula',
+			language TEXT DEFAULT 'en',
+			chapters_per_page INTEGER DEFAULT 20,
+			reading_direction TEXT DEFAULT 'ltr',
+			default_status TEXT DEFAULT 'reading',
+			show_spoilers BOOLEAN DEFAULT 0,
+			auto_sync BOOLEAN DEFAULT 1,
+			notifications_enabled BOOLEAN DEFAULT 1,
+			email_notifications BOOLEAN DEFAULT 0,
+			activity_public BOOLEAN DEFAULT 1,
+			library_public BOOLEAN DEFAULT 1,
+			keybindings TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		)`,
+
+		// Phase 3 indexes
+		`CREATE INDEX IF NOT EXISTS idx_daily_stats_user ON daily_stats(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_daily_stats_user_date ON daily_stats(user_id, date DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_chapter_history_user ON chapter_history(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_chapter_history_manga ON chapter_history(manga_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_chapter_history_read_at ON chapter_history(read_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_custom_lists_user ON custom_lists(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_custom_lists_public ON custom_lists(is_public)`,
+		`CREATE INDEX IF NOT EXISTS idx_custom_list_items_list ON custom_list_items(list_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_custom_list_items_manga ON custom_list_items(manga_id)`,
 	}
 
 	for _, migration := range migrations {

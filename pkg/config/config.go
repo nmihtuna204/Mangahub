@@ -25,6 +25,10 @@ type Config struct {
 	GRPC      GRPCConfig
 	WebSocket WebSocketConfig
 	Logging   LoggingConfig
+	Redis     RedisConfig
+	MangaDex  MangaDexConfig
+	Jikan     JikanConfig
+	AniList   AniListConfig
 }
 
 type ServerConfig struct {
@@ -81,6 +85,39 @@ type LoggingConfig struct {
 	Level  string `mapstructure:"level"`
 	Format string `mapstructure:"format"`
 	Output string `mapstructure:"output"`
+}
+
+// RedisConfig holds Redis cache configuration
+type RedisConfig struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	Password string `mapstructure:"password"`
+	DB       int    `mapstructure:"db"`
+	PoolSize int    `mapstructure:"pool_size"`
+}
+
+// MangaDexConfig holds MangaDex API configuration
+type MangaDexConfig struct {
+	BaseURL       string        `mapstructure:"base_url"`
+	RateLimit     int           `mapstructure:"rate_limit"`
+	Timeout       time.Duration `mapstructure:"timeout"`
+	RetryAttempts int           `mapstructure:"retry_attempts"`
+}
+
+// JikanConfig holds Jikan API configuration
+type JikanConfig struct {
+	BaseURL       string        `mapstructure:"base_url"`
+	RateLimit     int           `mapstructure:"rate_limit"`
+	Timeout       time.Duration `mapstructure:"timeout"`
+	RetryAttempts int           `mapstructure:"retry_attempts"`
+}
+
+// AniListConfig holds AniList GraphQL API configuration
+type AniListConfig struct {
+	BaseURL       string        `mapstructure:"base_url"`
+	RateLimit     int           `mapstructure:"rate_limit"`
+	Timeout       time.Duration `mapstructure:"timeout"`
+	RetryAttempts int           `mapstructure:"retry_attempts"`
 }
 
 // Load reads configuration from file
@@ -161,4 +198,29 @@ func setDefaults() {
 	viper.SetDefault("logging.level", "info")
 	viper.SetDefault("logging.format", "json")
 	viper.SetDefault("logging.output", "stdout")
+
+	// Redis defaults
+	viper.SetDefault("redis.host", "localhost")
+	viper.SetDefault("redis.port", 6379)
+	viper.SetDefault("redis.password", "")
+	viper.SetDefault("redis.db", 0)
+	viper.SetDefault("redis.pool_size", 10)
+
+	// MangaDex API defaults
+	viper.SetDefault("mangadex.base_url", "https://api.mangadex.org")
+	viper.SetDefault("mangadex.rate_limit", 5)
+	viper.SetDefault("mangadex.timeout", "30s")
+	viper.SetDefault("mangadex.retry_attempts", 3)
+
+	// Jikan API defaults
+	viper.SetDefault("jikan.base_url", "https://api.jikan.moe/v4")
+	viper.SetDefault("jikan.rate_limit", 3)
+	viper.SetDefault("jikan.timeout", "30s")
+	viper.SetDefault("jikan.retry_attempts", 3)
+
+	// AniList API defaults
+	viper.SetDefault("anilist.base_url", "https://graphql.anilist.co")
+	viper.SetDefault("anilist.rate_limit", 30)
+	viper.SetDefault("anilist.timeout", "30s")
+	viper.SetDefault("anilist.retry_attempts", 3)
 }
