@@ -127,3 +127,70 @@ func Fatal(args ...interface{}) {
 func Fatalf(format string, args ...interface{}) {
 	Get().Fatalf(format, args...)
 }
+
+// ===============================================
+// Protocol-Specific Logging for Network Tracing
+// ===============================================
+
+// Protocol constants for clear identification
+const (
+	ProtocolHTTP      = "HTTP"
+	ProtocolWebSocket = "WS"
+	ProtocolTCP       = "TCP"
+	ProtocolUDP       = "UDP"
+	ProtocolGRPC      = "gRPC"
+)
+
+// ProtocolLog creates a log entry with protocol context
+func ProtocolLog(protocol string) *logrus.Entry {
+	return Get().WithField("protocol", protocol)
+}
+
+// HTTP logs an HTTP request/response
+func HTTP(method, path string, status int, latencyMs int64) {
+	Get().WithFields(logrus.Fields{
+		"protocol": ProtocolHTTP,
+		"method":   method,
+		"path":     path,
+		"status":   status,
+		"latency":  latencyMs,
+	}).Infof("[%s] %s %s → %d (%dms)", ProtocolHTTP, method, path, status, latencyMs)
+}
+
+// WebSocket logs a WebSocket event
+func WebSocket(event, roomID, userID, detail string) {
+	Get().WithFields(logrus.Fields{
+		"protocol": ProtocolWebSocket,
+		"event":    event,
+		"room_id":  roomID,
+		"user_id":  userID,
+	}).Infof("[%s] %s | room=%s user=%s | %s", ProtocolWebSocket, event, roomID, userID, detail)
+}
+
+// TCP logs a TCP sync event
+func TCP(event, clientAddr, userID, detail string) {
+	Get().WithFields(logrus.Fields{
+		"protocol":    ProtocolTCP,
+		"event":       event,
+		"client_addr": clientAddr,
+		"user_id":     userID,
+	}).Infof("[%s] %s | client=%s user=%s | %s", ProtocolTCP, event, clientAddr, userID, detail)
+}
+
+// UDP logs a UDP notification event
+func UDP(event, targetAddr, detail string) {
+	Get().WithFields(logrus.Fields{
+		"protocol": ProtocolUDP,
+		"event":    event,
+		"target":   targetAddr,
+	}).Infof("[%s] %s | target=%s | %s", ProtocolUDP, event, targetAddr, detail)
+}
+
+// GRPC logs a gRPC call
+func GRPC(method, detail string, durationMs int64) {
+	Get().WithFields(logrus.Fields{
+		"protocol": ProtocolGRPC,
+		"method":   method,
+		"duration": durationMs,
+	}).Infof("[%s] %s | %s (%dms)", ProtocolGRPC, method, detail, durationMs)
+}

@@ -6,8 +6,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/google/uuid"
 	"mangahub/pkg/models"
+
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -39,6 +40,16 @@ func (db *DB) Seed() error {
 
 	// Seed manga data
 	if err := db.seedMangaData(); err != nil {
+		return err
+	}
+
+	// Seed user activities
+	if err := db.seedActivities(); err != nil {
+		return err
+	}
+
+	// Seed reading statistics
+	if err := db.seedReadingStats(); err != nil {
 		return err
 	}
 
@@ -223,4 +234,176 @@ func (db *DB) seedDefaultManga() error {
 	}
 
 	return nil
+}
+
+// seedActivities generates sample activity feed entries
+func (db *DB) seedActivities() error {
+	// Get test users
+	rows, err := db.Query("SELECT id, username FROM users WHERE role = 'user' LIMIT 3")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var users []struct {
+		id       string
+		username string
+	}
+	for rows.Next() {
+		var u struct {
+			id       string
+			username string
+		}
+		if err := rows.Scan(&u.id, &u.username); err != nil {
+			return err
+		}
+		users = append(users, u)
+	}
+
+	// Get manga
+	mangaRows, err := db.Query("SELECT id, title FROM manga LIMIT 3")
+	if err != nil {
+		return err
+	}
+	defer mangaRows.Close()
+
+	var mangaList []struct {
+		id    string
+		title string
+	}
+	for mangaRows.Next() {
+		var m struct {
+			id    string
+			title string
+		}
+		if err := mangaRows.Scan(&m.id, &m.title); err != nil {
+			return err
+		}
+		mangaList = append(mangaList, m)
+	}
+
+	if len(users) == 0 || len(mangaList) == 0 {
+		return nil
+	}
+
+	// Generate activities for last 7 days
+	activities := []struct {
+		activityType string
+		chapter      *int
+		rating       *float64
+	}{
+		{"chapter_read", intPtr(5), nil},
+		{"chapter_read", intPtr(10), nil},
+		{"manga_rated", nil, float64Ptr(8.5)},
+		{"chapter_read", intPtr(15), nil},
+		{"manga_completed", nil, nil},
+		{"manga_rated", nil, float64Ptr(9.0)},
+		{"chapter_read", intPtr(1), nil},
+		{"chapter_read", intPtr(20), nil},
+	}
+
+	for i, activity := range activities {
+		user := users[i%len(users)]
+		manga := mangaList[i%len(mangaList)]
+		createdAt := time.Now().Add(-time.Duration(len(activities)-i) * 12 * time.Hour)
+
+		_, err := db.Exec(`
+			INSERT INTO activity_feed (id, user_id, username, activity_type, manga_id, manga_title, chapter_number, rating, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			uuid.New().String(), user.id, user.username, activity.activityType,
+			manga.id, manga.title, activity.chapter, activity.rating, createdAt,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// seedReadingStats generates chapter history for statistics
+func (db *DB) seedReadingStats() error {
+	// Get test users
+	rows, err := db.Query("SELECT id, username FROM users WHERE role = 'user' LIMIT 3")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var users []struct {
+		id       string
+		username string
+	}
+	for rows.Next() {
+		var u struct {
+			id       string
+			username string
+		}
+		if err := rows.Scan(&u.id, &u.username); err != nil {
+			return err
+		}
+		users = append(users, u)
+	}
+
+	// Get manga
+	mangaRows, err := db.Query("SELECT id, title FROM manga LIMIT 3")
+	if err != nil {
+		return err
+	}
+	defer mangaRows.Close()
+
+	var mangaList []struct {
+		id    string
+		title string
+	}
+	for mangaRows.Next() {
+		var m struct {
+			id    string
+			title string
+		}
+		if err := mangaRows.Scan(&m.id, &m.title); err != nil {
+			return err
+		}
+		mangaList = append(mangaList, m)
+	}
+
+	if len(users) == 0 || len(mangaList) == 0 {
+		return nil
+	}
+
+	// Generate reading history for last 30 days
+	now := time.Now()
+	for daysAgo := 30; daysAgo >= 0; daysAgo-- {
+		date := now.Add(-time.Duration(daysAgo) * 24 * time.Hour)
+
+		// Random number of chapters read per day (0-5)
+		chaptersPerDay := daysAgo % 6
+
+		for i := 0; i < chaptersPerDay; i++ {
+			user := users[i%len(users)]
+			manga := mangaList[i%len(mangaList)]
+			chapterNum := (30-daysAgo)*2 + i + 1 // Sequential chapters
+
+			readTime := date.Add(time.Duration(i*2) * time.Hour)
+
+			_, err := db.Exec(`
+				INSERT INTO chapter_history (id, user_id, manga_id, manga_title, chapter_number, read_at)
+				VALUES (?, ?, ?, ?, ?, ?)`,
+				uuid.New().String(), user.id, manga.id, manga.title, chapterNum, readTime,
+			)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func intPtr(i int) *int {
+	return &i
+}
+
+func float64Ptr(f float64) *float64 {
+	return &f
 }

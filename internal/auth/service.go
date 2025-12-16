@@ -23,6 +23,8 @@ type Service interface {
 	Register(ctx context.Context, req models.RegisterRequest) (*models.UserProfile, error)
 	Login(ctx context.Context, req models.LoginRequest) (*models.LoginResponse, error)
 	ParseToken(tokenStr string) (*models.UserProfile, error)
+	RefreshToken(ctx context.Context, userID string) (string, error)
+	GetUserByID(ctx context.Context, userID string) (*models.UserProfile, error)
 }
 
 type service struct {
@@ -185,5 +187,74 @@ func (s *service) ParseToken(tokenStr string) (*models.UserProfile, error) {
 		ID:       claims.UserID,
 		Username: claims.Username,
 		// role can be added if you include it in UserProfile later
+	}, nil
+}
+
+// RefreshToken generates a new JWT token for an existing user
+func (s *service) RefreshToken(ctx context.Context, userID string) (string, error) {
+	// Get user from DB to ensure they still exist and are active
+	user, err := s.GetUserByID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+
+	now := time.Now()
+	expiresAt := now.Add(s.exp)
+
+	claims := jwtClaims{
+		UserID:   user.ID,
+		Username: user.Username,
+		Role:     "user", // Default role
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   user.ID,
+			Issuer:    s.issuer,
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			IssuedAt:  jwt.NewNumericDate(now),
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenStr, err := token.SignedString(s.jwtSecret)
+	if err != nil {
+		return "", models.NewAppError(models.ErrCodeInternal, "failed to sign token", 500, err)
+	}
+
+	return tokenStr, nil
+}
+
+// GetUserByID retrieves a user profile by their ID
+func (s *service) GetUserByID(ctx context.Context, userID string) (*models.UserProfile, error) {
+	var (
+		id          string
+		username    string
+		displayName string
+		bio         sql.NullString
+		avatarURL   sql.NullString
+		createdAt   time.Time
+		lastLogin   *time.Time
+	)
+
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, username, display_name, bio, avatar_url, created_at, last_login_at
+		FROM users
+		WHERE id = ? AND is_active = 1`,
+		userID,
+	).Scan(&id, &username, &displayName, &bio, &avatarURL, &createdAt, &lastLogin)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, models.NewAppError(models.ErrCodeNotFound, "user not found", 404, nil)
+		}
+		return nil, models.NewAppError(models.ErrCodeInternal, "failed to query user", 500, err)
+	}
+
+	return &models.UserProfile{
+		ID:          id,
+		Username:    username,
+		DisplayName: displayName,
+		Bio:         bio.String,
+		AvatarURL:   avatarURL.String,
+		CreatedAt:   createdAt,
+		LastLoginAt: lastLogin,
 	}, nil
 }

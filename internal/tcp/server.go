@@ -70,7 +70,8 @@ func (s *ProgressSyncServer) Start() error {
 				continue
 			}
 		}
-		logger.Infof("New TCP client connected from %s", conn.RemoteAddr())
+		// Protocol trace logging
+		logger.TCP("CONNECT", conn.RemoteAddr().String(), "", "new connection accepted")
 		go s.handleConnection(conn)
 	}
 }
@@ -86,14 +87,16 @@ func (s *ProgressSyncServer) runHub() {
 			s.clientsMu.Lock()
 			s.clients[c.id] = c
 			s.clientsMu.Unlock()
-			logger.Infof("Client registered: %s (total: %d)", c.id, len(s.clients))
+			// Protocol trace logging
+			logger.TCP("REGISTER", c.conn.RemoteAddr().String(), string(c.id), fmt.Sprintf("total_clients=%d", len(s.clients)))
 
 		case c := <-s.unregister:
 			s.clientsMu.Lock()
 			if _, ok := s.clients[c.id]; ok {
 				delete(s.clients, c.id)
 				close(c.send)
-				logger.Infof("Client unregistered: %s (total: %d)", c.id, len(s.clients))
+				// Protocol trace logging
+				logger.TCP("UNREGISTER", c.conn.RemoteAddr().String(), string(c.id), fmt.Sprintf("total_clients=%d", len(s.clients)))
 			}
 			s.clientsMu.Unlock()
 
