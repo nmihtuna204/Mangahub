@@ -73,13 +73,15 @@ func (s *NotificationServer) runHub() {
 			s.clientsMu.Lock()
 			s.clients[clientID] = addr
 			s.clientsMu.Unlock()
-			logger.Infof("UDP client registered: %s (total: %d)", clientID, len(s.clients))
+			// Protocol trace logging
+			logger.UDP("REGISTER", clientID, fmt.Sprintf("total_subscribers=%d", len(s.clients)))
 
 		case clientID := <-s.unregister:
 			s.clientsMu.Lock()
 			delete(s.clients, clientID)
 			s.clientsMu.Unlock()
-			logger.Infof("UDP client unregistered: %s (total: %d)", clientID, len(s.clients))
+			// Protocol trace logging
+			logger.UDP("UNREGISTER", clientID, fmt.Sprintf("total_subscribers=%d", len(s.clients)))
 
 		case notification := <-s.Broadcast:
 			s.broadcastNotification(notification)
@@ -143,7 +145,8 @@ func (s *NotificationServer) broadcastNotification(notification Notification) {
 		return
 	}
 
-	logger.Infof("Broadcasting notification to %d UDP clients: %s", len(s.clients), notification.Message)
+	// Protocol trace logging
+	logger.UDP("BROADCAST", fmt.Sprintf("%d_clients", len(s.clients)), notification.Type+": "+notification.Message)
 
 	for clientID, addr := range s.clients {
 		if err := s.sendTo(addr, data); err != nil {

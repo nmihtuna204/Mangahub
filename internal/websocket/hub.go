@@ -27,10 +27,10 @@ type Hub struct {
 	unregister chan *Client
 	broadcast  chan RoomMessage
 	stop       chan struct{}
-	
+
 	// Chat repository for message persistence (Phase 2)
 	// Optional: if nil, messages are not persisted
-	chatRepo   chat.Repository
+	chatRepo chat.Repository
 }
 
 // NewHub creates a new hub without persistence
@@ -76,7 +76,8 @@ func (h *Hub) registerClient(c *Client) {
 	h.rooms[c.roomID][c] = true
 	h.mu.Unlock()
 
-	logger.Infof("Client %s joined room %s", c.username, c.roomID)
+	// Protocol trace logging
+	logger.WebSocket("JOIN", c.roomID, c.userID, c.username+" connected")
 
 	joinNotice := NewRoomMessage(c.userID, c.username, c.username+" joined the chat", "join")
 	h.broadcastToRoom(c.roomID, joinNotice)
@@ -89,7 +90,8 @@ func (h *Hub) unregisterClient(c *Client) {
 			delete(room, c)
 			close(c.send)
 
-			logger.Infof("Client %s left room %s", c.username, c.roomID)
+			// Protocol trace logging
+			logger.WebSocket("LEAVE", c.roomID, c.userID, c.username+" disconnected")
 
 			leaveNotice := NewRoomMessage(c.userID, c.username, c.username+" left the chat", "leave")
 			h.mu.Unlock()
@@ -125,7 +127,8 @@ func (h *Hub) broadcastMessage(msg RoomMessage) {
 	defer h.mu.RUnlock()
 
 	if room, exists := h.rooms[msg.RoomID]; exists {
-		logger.Debugf("Broadcasting message in room %s from %s", msg.RoomID, msg.Username)
+		// Protocol trace logging
+		logger.WebSocket("BROADCAST", msg.RoomID, msg.UserID, "type="+msg.Type+" from="+msg.Username)
 		for client := range room {
 			select {
 			case client.send <- msg:

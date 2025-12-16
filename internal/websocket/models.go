@@ -13,7 +13,8 @@ type ChatMessage struct {
 type RoomMessage struct {
 	UserID    string `json:"user_id"`
 	Username  string `json:"username"`
-	Message   string `json:"message"`
+	Message   string `json:"message"` // For internal use
+	Content   string `json:"content"` // For JSON serialization (same as Message)
 	Timestamp int64  `json:"timestamp"`
 	Type      string `json:"type"` // message, join, leave
 	RoomID    string `json:"room_id,omitempty"`
@@ -24,6 +25,7 @@ func NewRoomMessage(userID, username, message, msgType string) RoomMessage {
 		UserID:    userID,
 		Username:  username,
 		Message:   message,
+		Content:   message, // Set both for compatibility
 		Timestamp: time.Now().Unix(),
 		Type:      msgType,
 	}

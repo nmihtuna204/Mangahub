@@ -3,8 +3,9 @@ package websocket
 import (
 	"time"
 
-	"github.com/gorilla/websocket"
 	"mangahub/pkg/logger"
+
+	"github.com/gorilla/websocket"
 )
 
 const (
@@ -38,7 +39,8 @@ func (c *Client) readPump() {
 
 	for {
 		var msg struct {
-			Message string `json:"message"`
+			Content string `json:"content"`
+			Type    string `json:"type"`
 		}
 		if err := c.conn.ReadJSON(&msg); err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
@@ -47,8 +49,12 @@ func (c *Client) readPump() {
 			break
 		}
 
-		if msg.Message != "" {
-			roomMsg := NewRoomMessage(c.userID, c.username, msg.Message, "message")
+		if msg.Content != "" {
+			msgType := msg.Type
+			if msgType == "" {
+				msgType = "message"
+			}
+			roomMsg := NewRoomMessage(c.userID, c.username, msg.Content, msgType)
 			roomMsg.RoomID = c.roomID
 			c.hub.broadcast <- roomMsg
 		}
