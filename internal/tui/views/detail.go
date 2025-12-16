@@ -27,6 +27,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"mangahub/internal/tui/api"
+	"mangahub/internal/tui/network"
 	"mangahub/internal/tui/styles"
 	"mangahub/pkg/models"
 )
@@ -100,7 +101,7 @@ func NewDetail(mangaID string) DetailModel {
 		client:  api.GetClient(),
 		mangaID: mangaID,
 		loading: true,
-		actions: []string{"Read Next", "Comments", "Rate", "Add to Library"},
+		actions: []string{"Read Next", "💬 Chat", "Comments", "Rate", "Add to Library"},
 	}
 }
 
@@ -173,7 +174,21 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 			// Read next
 			// TODO: Implement read next action
 		case "c":
-			// Comments
+			// Join Chat for this manga
+			if m.manga != nil {
+				mangaName := m.manga.Title
+				roomID := "manga_" + m.mangaID
+				return m, func() tea.Msg {
+					return network.JoinRoomMsg{
+						RoomID:    roomID,
+						RoomName:  mangaName + " Discussion",
+						MangaID:   m.mangaID,
+						MangaName: mangaName,
+					}
+				}
+			}
+		case "C":
+			// Comments (capital C)
 			// TODO: Navigate to comments view
 		case "R":
 			// Rate
@@ -192,9 +207,9 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 		m.loading = false
 		// Update actions based on library status
 		if m.library != nil {
-			m.actions = []string{"Read Next", "Update Progress", "Comments", "Rate"}
+			m.actions = []string{"Read Next", "💬 Chat", "Update Progress", "Comments", "Rate"}
 		} else {
-			m.actions = []string{"Add to Library", "Comments", "Rate"}
+			m.actions = []string{"Add to Library", "💬 Chat", "Comments", "Rate"}
 		}
 
 	case DetailErrorMsg:
