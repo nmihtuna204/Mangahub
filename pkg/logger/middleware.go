@@ -17,28 +17,23 @@ func GinLogger() gin.HandlerFunc {
 
 		// Calculate latency
 		latency := time.Since(startTime)
+		latencyMs := latency.Milliseconds()
 
 		// Get status code
 		statusCode := c.Writer.Status()
 
-		// Log request
-		entry := Get().WithFields(logrus.Fields{
-			"method":     c.Request.Method,
-			"path":       c.Request.URL.Path,
-			"status":     statusCode,
-			"latency":    latency,
-			"ip":         c.ClientIP(),
-			"user_agent": c.Request.UserAgent(),
-		})
+		// Protocol-aware logging with clear [HTTP] prefix
+		HTTP(c.Request.Method, c.Request.URL.Path, statusCode, latencyMs)
 
+		// Additional structured logging for errors
 		if len(c.Errors) > 0 {
-			entry.Error(c.Errors.String())
-		} else if statusCode >= 500 {
-			entry.Error("Server error")
-		} else if statusCode >= 400 {
-			entry.Warn("Client error")
-		} else {
-			entry.Info("Request processed")
+			Get().WithFields(logrus.Fields{
+				"protocol": ProtocolHTTP,
+				"method":   c.Request.Method,
+				"path":     c.Request.URL.Path,
+				"status":   statusCode,
+				"errors":   c.Errors.String(),
+			}).Error("[HTTP] Request failed with errors")
 		}
 	}
 }

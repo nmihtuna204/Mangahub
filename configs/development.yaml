@@ -45,3 +45,30 @@ logging:
   level: "debug"
   format: "json"
   output: "stdout"
+
+# Redis Cache
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+  pool_size: 10
+
+# External APIs (No API keys required - all public)
+mangadex:
+  base_url: "https://api.mangadex.org"
+  rate_limit: 5          # requests per second
+  timeout: "30s"
+  retry_attempts: 3
+
+jikan:
+  base_url: "https://api.jikan.moe/v4"
+  rate_limit: 3          # requests per second
+  timeout: "30s"
+  retry_attempts: 3
+
+anilist:
+  base_url: "https://graphql.anilist.co"
+  rate_limit: 30         # requests per minute
+  timeout: "30s"
+  retry_attempts: 3

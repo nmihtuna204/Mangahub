@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"mangahub/pkg/models"
+
+	"github.com/google/uuid"
 )
 
 type Repository interface {
 	AddOrUpdate(ctx context.Context, userID string, req models.UpdateProgressRequest) (*models.ReadingProgress, error)
 	ListByUser(ctx context.Context, userID string) ([]models.ProgressWithManga, error)
+	Delete(ctx context.Context, userID, mangaID string) error
 }
 
 type repository struct {
@@ -120,4 +122,24 @@ func (r *repository) ListByUser(ctx context.Context, userID string) ([]models.Pr
 		})
 	}
 	return result, nil
+}
+
+// Delete removes a manga from user's library
+func (r *repository) Delete(ctx context.Context, userID, mangaID string) error {
+	result, err := r.db.ExecContext(ctx,
+		"DELETE FROM reading_progress WHERE user_id = ? AND manga_id = ?",
+		userID, mangaID,
+	)
+	if err != nil {
+		return fmt.Errorf("delete progress: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("get rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("manga not found in library")
+	}
+	return nil
 }

@@ -33,7 +33,8 @@ func NewMangaServiceServer(db *sql.DB) *MangaServiceServer {
 
 // GetManga retrieves a single manga by ID
 func (s *MangaServiceServer) GetManga(ctx context.Context, req *pb.GetMangaRequest) (*pb.MangaResponse, error) {
-	logger.Infof("gRPC: GetManga called for manga_id=%s", req.MangaId)
+	// Protocol trace logging
+	logger.GRPC("GetManga", "manga_id="+req.MangaId, 0)
 
 	var manga models.Manga
 	row := s.db.QueryRowContext(ctx, `
@@ -77,8 +78,8 @@ func (s *MangaServiceServer) GetManga(ctx context.Context, req *pb.GetMangaReque
 
 // SearchManga searches for manga with filters
 func (s *MangaServiceServer) SearchManga(ctx context.Context, req *pb.SearchRequest) (*pb.SearchResponse, error) {
-	logger.Infof("gRPC: SearchManga called with query=%s, limit=%d, offset=%d",
-		req.Query, req.Limit, req.Offset)
+	// Protocol trace logging
+	logger.GRPC("SearchManga", fmt.Sprintf("query=%s limit=%d offset=%d", req.Query, req.Limit, req.Offset), 0)
 
 	if req.Limit <= 0 {
 		req.Limit = 20

@@ -1,6 +1,7 @@
 package progress
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -12,9 +13,20 @@ type ProtocolBridge interface {
 	BroadcastProgressUpdate(userID, username, mangaID string, chapter int32, status string) error
 }
 
+type ActivityRecorder interface {
+	RecordChapterRead(ctx context.Context, userID, username, mangaID, mangaTitle string, chapterNum int) error
+	RecordMangaCompleted(ctx context.Context, userID, username, mangaID, mangaTitle string) error
+}
+
 type Handler struct {
-	svc    Service
-	bridge ProtocolBridge
+	svc              Service
+	bridge           ProtocolBridge
+	activityRecorder ActivityRecorder
+	mangaSvc         MangaService
+}
+
+type MangaService interface {
+	GetByID(ctx context.Context, id string) (*models.Manga, error)
 }
 
 func NewHandler(svc Service) *Handler {
@@ -25,6 +37,15 @@ func NewHandlerWithBridge(svc Service, bridge ProtocolBridge) *Handler {
 	return &Handler{
 		svc:    svc,
 		bridge: bridge,
+	}
+}
+
+func NewHandlerWithActivity(svc Service, bridge ProtocolBridge, activityRecorder ActivityRecorder, mangaSvc MangaService) *Handler {
+	return &Handler{
+		svc:              svc,
+		bridge:           bridge,
+		activityRecorder: activityRecorder,
+		mangaSvc:         mangaSvc,
 	}
 }
 
@@ -85,6 +106,41 @@ func (h *Handler) GetLibrary(c *gin.Context) {
 		models.NewSuccessResponse(list, "user library"))
 }
 
+// DELETE /users/library/:manga_id
+func (h *Handler) RemoveFromLibrary(c *gin.Context) {
+	user := auth.GetCurrentUser(c)
+	if user == nil {
+		c.JSON(http.StatusUnauthorized,
+			models.NewErrorResponse(models.ErrCodeUnauthorized, "unauthorized", nil))
+		return
+	}
+
+	mangaID := c.Param("manga_id")
+	if mangaID == "" {
+		c.JSON(http.StatusBadRequest,
+			models.NewErrorResponse(models.ErrCodeBadRequest, "manga_id is required", nil))
+		return
+	}
+
+	err := h.svc.Delete(c.Request.Context(), user.ID, mangaID)
+	if err != nil {
+		if appErr, ok := err.(*models.AppError); ok {
+			c.JSON(appErr.StatusCode,
+				models.NewErrorResponse(appErr.Code, appErr.Message, appErr.Details))
+			return
+		}
+		c.JSON(http.StatusInternalServerError,
+			models.NewErrorResponse(models.ErrCodeInternal, "unexpected error", nil))
+		return
+	}
+
+	c.JSON(http.StatusOK,
+		models.NewSuccessResponse(map[string]interface{}{
+			"manga_id": mangaID,
+			"removed":  true,
+		}, "manga removed from library"))
+}
+
 // PUT /users/progress
 func (h *Handler) UpdateProgress(c *gin.Context) {
 	user := auth.GetCurrentUser(c)
@@ -123,6 +179,39 @@ func (h *Handler) UpdateProgress(c *gin.Context) {
 				int32(req.CurrentChapter),
 				req.Status,
 			)
+		}()
+	}
+
+	// 📝 ACTIVITY: Record chapter read activity
+	if h.activityRecorder != nil && h.mangaSvc != nil && req.CurrentChapter > 0 {
+		go func() {
+			manga, err := h.mangaSvc.GetByID(c.Request.Context(), progress.MangaID)
+			if err == nil {
+				_ = h.activityRecorder.RecordChapterRead(
+					c.Request.Context(),
+					user.ID,
+					user.Username,
+					progress.MangaID,
+					manga.Title,
+					progress.CurrentChapter,
+				)
+			}
+		}()
+	}
+
+	// 🎉 ACTIVITY: Record completion if manga is completed
+	if h.activityRecorder != nil && h.mangaSvc != nil && req.Status == "completed" {
+		go func() {
+			manga, err := h.mangaSvc.GetByID(c.Request.Context(), progress.MangaID)
+			if err == nil {
+				_ = h.activityRecorder.RecordMangaCompleted(
+					c.Request.Context(),
+					user.ID,
+					user.Username,
+					progress.MangaID,
+					manga.Title,
+				)
+			}
 		}()
 	}
 

@@ -67,3 +67,5 @@ bin/
 # Test coverage
 coverage.txt
 coverage.html
+
+go.sum 
