@@ -564,7 +564,7 @@ const file_proto_manga_proto_rawDesc = "" +
 	"\fMangaService\x12D\n" +
 	"\bGetManga\x12\x1c.mangahub.v1.GetMangaRequest\x1a\x1a.mangahub.v1.MangaResponse\x12F\n" +
 	"\vSearchManga\x12\x1a.mangahub.v1.SearchRequest\x1a\x1b.mangahub.v1.SearchResponse\x12M\n" +
-	"\x0eUpdateProgress\x12\x1c.mangahub.v1.ProgressRequest\x1a\x1d.mangahub.v1.ProgressResponseB5Z3github.com/nmihtuna204/mangahub/internal/grpc/pb;pbb\x06proto3"
+	"\x0eUpdateProgress\x12\x1c.mangahub.v1.ProgressRequest\x1a\x1d.mangahub.v1.ProgressResponseB5Z3mangahub/internal/grpc/pb;pbb\x06proto3"
 
 var (
 	file_proto_manga_proto_rawDescOnce sync.Once
