@@ -1,12 +1,13 @@
 // Package views - Library View
 // Tabbed shelf layout for user's manga library
 // Layout:
-//   Reading  |  Plan  |  Completed  |  Dropped
-//   ─────────────────────────────────────────────
-//   [x] One Piece           Ch: 1093/1100   ★★★★★
-//   [ ] Jujutsu Kaisen      Ch: 260/???     ★★★★☆
-//   ─────────────────────────────────────────────
-//   [Enter] Details  [d] Delete  [u] Update  [Tab] Next
+//
+//	Reading  |  Plan  |  Completed  |  Dropped
+//	─────────────────────────────────────────────
+//	[x] One Piece           Ch: 1093/1100   ★★★★★
+//	[ ] Jujutsu Kaisen      Ch: 260/???     ★★★★☆
+//	─────────────────────────────────────────────
+//	[Enter] Details  [d] Delete  [u] Update  [Tab] Next
 package views
 
 import (
@@ -202,9 +203,52 @@ func (m LibraryModel) Update(msg tea.Msg) (LibraryModel, tea.Cmd) {
 			}
 
 		case "u":
-			// Update progress (would open progress modal)
+			// Update progress
 			if m.selectedIndex < len(m.filteredEntries) {
-				// TODO: Implement progress update
+				entry := m.filteredEntries[m.selectedIndex]
+				return m, m.updateProgress(entry.MangaID)
+			}
+
+		case "f":
+			// Toggle favorite
+			if m.selectedIndex < len(m.filteredEntries) {
+				entry := m.filteredEntries[m.selectedIndex]
+				return m, m.toggleFavorite(entry.MangaID, entry.Manga.Title)
+			}
+
+		case "1":
+			// Mark as Reading
+			if m.selectedIndex < len(m.filteredEntries) {
+				entry := m.filteredEntries[m.selectedIndex]
+				return m, m.changeStatus(entry.MangaID, "reading")
+			}
+
+		case "2":
+			// Mark as Planning
+			if m.selectedIndex < len(m.filteredEntries) {
+				entry := m.filteredEntries[m.selectedIndex]
+				return m, m.changeStatus(entry.MangaID, "planning")
+			}
+
+		case "3":
+			// Mark as Completed
+			if m.selectedIndex < len(m.filteredEntries) {
+				entry := m.filteredEntries[m.selectedIndex]
+				return m, m.changeStatus(entry.MangaID, "completed")
+			}
+
+		case "4":
+			// Mark as On Hold
+			if m.selectedIndex < len(m.filteredEntries) {
+				entry := m.filteredEntries[m.selectedIndex]
+				return m, m.changeStatus(entry.MangaID, "on_hold")
+			}
+
+		case "5":
+			// Mark as Dropped
+			if m.selectedIndex < len(m.filteredEntries) {
+				entry := m.filteredEntries[m.selectedIndex]
+				return m, m.changeStatus(entry.MangaID, "dropped")
 			}
 		}
 
@@ -386,23 +430,23 @@ func (m LibraryModel) renderEntryRow(index int, entry api.LibraryEntry) string {
 
 	// Progress
 	var progress string
-	if entry.TotalChapters > 0 {
-		progress = fmt.Sprintf("Ch. %d/%d", entry.CurrentChapter, entry.TotalChapters)
+	if entry.Manga.TotalChapters > 0 {
+		progress = fmt.Sprintf("Ch. %d/%d", entry.CurrentChapter, entry.Manga.TotalChapters)
 	} else {
 		progress = fmt.Sprintf("Ch. %d/???", entry.CurrentChapter)
 	}
 
 	// Progress bar
 	var progressPct float64
-	if entry.TotalChapters > 0 {
-		progressPct = float64(entry.CurrentChapter) / float64(entry.TotalChapters)
+	if entry.Manga.TotalChapters > 0 {
+		progressPct = float64(entry.CurrentChapter) / float64(entry.Manga.TotalChapters)
 	}
 	progressBar := styles.RenderProgressBar(progressPct, 6)
 
-	// Rating
+	// Rating - show manga's average rating, not user rating (removed from progress)
 	var rating string
-	if entry.Rating > 0 {
-		rating = styles.RenderRating(entry.Rating, true) // 10-scale to 5-star
+	if entry.Manga.AverageRating > 0 {
+		rating = styles.RenderRating(entry.Manga.AverageRating, true) // Average rating
 	} else {
 		rating = m.theme.DimText.Render("Unrated")
 	}
@@ -476,5 +520,75 @@ func (m *LibraryModel) SetHeight(h int) {
 	m.visibleRows = (h - 10) / 2
 	if m.visibleRows < 3 {
 		m.visibleRows = 3
+	}
+}
+
+// =====================================
+// LIBRARY ACTIONS
+// =====================================
+
+// changeStatus changes the reading status of a manga
+func (m LibraryModel) changeStatus(mangaID string, newStatus string) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		err := m.client.UpdateLibraryStatus(ctx, mangaID, newStatus)
+		if err != nil {
+			return LibraryErrorMsg{Error: err}
+		}
+		// Reload library
+		return m.loadLibrary()
+	}
+}
+
+// updateProgress updates the reading progress
+func (m LibraryModel) updateProgress(mangaID string) tea.Cmd {
+	return func() tea.Msg {
+		// For now, increment chapter by 1
+		// TODO: Open modal to input chapter number
+		ctx := context.Background()
+
+		// Get current entry to find current chapter and status
+		var currentChapter int
+		var currentStatus string
+		var isFavorite bool
+		for _, entry := range m.filteredEntries {
+			if entry.MangaID == mangaID {
+				currentChapter = entry.CurrentChapter + 1
+				currentStatus = entry.Status
+				isFavorite = entry.IsFavorite
+				break
+			}
+		}
+
+		err := m.client.UpdateProgress(ctx, mangaID, currentChapter, currentStatus, isFavorite)
+		if err != nil {
+			return LibraryErrorMsg{Error: err}
+		}
+		// Reload library
+		return m.loadLibrary()
+	}
+}
+
+// toggleFavorite toggles the favorite status
+func (m LibraryModel) toggleFavorite(mangaID string, title string) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+
+		// Find current favorite status
+		var isFavorite bool
+		for _, entry := range m.filteredEntries {
+			if entry.MangaID == mangaID {
+				// Assuming there's a favorite field - toggle it
+				isFavorite = !isFavorite // Toggle
+				break
+			}
+		}
+
+		err := m.client.ToggleFavorite(ctx, mangaID, isFavorite)
+		if err != nil {
+			return LibraryErrorMsg{Error: err}
+		}
+		// Reload library
+		return m.loadLibrary()
 	}
 }

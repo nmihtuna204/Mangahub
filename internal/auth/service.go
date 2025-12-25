@@ -88,7 +88,6 @@ func (s *service) Register(ctx context.Context, req models.RegisterRequest) (*mo
 		ID:          userID,
 		Username:    req.Username,
 		DisplayName: req.Username,
-		Bio:         "",
 		AvatarURL:   "",
 		CreatedAt:   now,
 	}
@@ -157,7 +156,6 @@ func (s *service) Login(ctx context.Context, req models.LoginRequest) (*models.L
 		ID:          id,
 		Username:    username,
 		DisplayName: displayName,
-		Bio:         "",
 		AvatarURL:   "",
 		CreatedAt:   createdAt,
 		LastLoginAt: lastLoginPtr,
@@ -228,18 +226,16 @@ func (s *service) GetUserByID(ctx context.Context, userID string) (*models.UserP
 		id          string
 		username    string
 		displayName string
-		bio         sql.NullString
-		avatarURL   sql.NullString
 		createdAt   time.Time
 		lastLogin   *time.Time
 	)
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, username, display_name, bio, avatar_url, created_at, last_login_at
+		SELECT id, username, display_name, created_at, last_login_at
 		FROM users
 		WHERE id = ? AND is_active = 1`,
 		userID,
-	).Scan(&id, &username, &displayName, &bio, &avatarURL, &createdAt, &lastLogin)
+	).Scan(&id, &username, &displayName, &createdAt, &lastLogin)
 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -252,8 +248,7 @@ func (s *service) GetUserByID(ctx context.Context, userID string) (*models.UserP
 		ID:          id,
 		Username:    username,
 		DisplayName: displayName,
-		Bio:         bio.String,
-		AvatarURL:   avatarURL.String,
+		AvatarURL:   "", // Avatar URL can be generated from external service (Gravatar, etc.)
 		CreatedAt:   createdAt,
 		LastLoginAt: lastLogin,
 	}, nil

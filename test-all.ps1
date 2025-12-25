@@ -1,7 +1,7 @@
 # Comprehensive Phase 9 Testing Script
 
 Write-Host "=====================================" -ForegroundColor Cyan
-Write-Host " PHASE 9: TESTING & BUG FIXES" -ForegroundColor Cyan
+Write-Host " TESTING & BUG FIXES" -ForegroundColor Cyan
 Write-Host "=====================================" -ForegroundColor Cyan
 Write-Host ""
 

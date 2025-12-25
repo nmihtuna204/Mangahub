@@ -309,32 +309,41 @@ Then follow the menu prompts to navigate through features.
 
 ## Manual Testing
 
-### Test HTTP API with cURL
+> Note: On Windows PowerShell, the `curl` command is an alias for `Invoke-WebRequest`. Use `Invoke-RestMethod` for JSON APIs, or `curl.exe` (if installed) to use the native curl binary.
 
-#### Register User
+### Test HTTP API (PowerShell preferred)
+
+#### Register User (PowerShell)
 ```powershell
-curl -X POST http://localhost:8080/api/v1/auth/register `
-  -H "Content-Type: application/json" `
-  -d '{\"username\":\"testuser\",\"email\":\"test@example.com\",\"password\":\"password123\"}'
+$body = @{ username = 'testuser'; email = 'test@example.com'; password = 'password123' } | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8080/auth/register -Method Post -ContentType 'application/json' -Body $body
 ```
 
-#### Login
+(Alternative with native curl)
 ```powershell
-curl -X POST http://localhost:8080/api/v1/auth/login `
-  -H "Content-Type: application/json" `
-  -d '{\"email\":\"test@example.com\",\"password\":\"password123\"}'
+curl.exe -X POST http://localhost:8080/auth/register -H "Content-Type: application/json" -d '{"username":"testuser","email":"test@example.com","password":"password123"}'
 ```
 
-#### Search Manga
+#### Login (PowerShell)
 ```powershell
-curl -X GET "http://localhost:8080/api/v1/manga/search?q=naruto" `
-  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+$body = @{ email = 'test@example.com'; password = 'password123' } | ConvertTo-Json
+$resp = Invoke-RestMethod -Uri http://localhost:8080/auth/login -Method Post -ContentType 'application/json' -Body $body
+$token = $resp.data.token  # adjust according to response structure
 ```
 
-#### Get Reading Progress
+(Using curl.exe)
 ```powershell
-curl -X GET http://localhost:8080/api/v1/progress `
-  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+curl.exe -X POST http://localhost:8080/auth/login -H "Content-Type: application/json" -d '{"email":"test@example.com","password":"password123"}'
+```
+
+#### Search Manga (with JWT)
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8080/manga/search?q=naruto" -Headers @{ Authorization = "Bearer $token" } -Method Get
+```
+
+#### Get Reading Progress (with JWT)
+```powershell
+Invoke-RestMethod -Uri http://localhost:8080/users/progress -Headers @{ Authorization = "Bearer $token" } -Method Get
 ```
 
 ### Test TCP with PowerShell Script

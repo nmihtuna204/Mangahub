@@ -13,6 +13,9 @@ package websocket
 import (
 	"context"
 	"sync"
+	"time"
+
+	"github.com/google/uuid"
 
 	"mangahub/internal/chat"
 	"mangahub/pkg/logger"
@@ -112,10 +115,16 @@ func (h *Hub) broadcastMessage(msg RoomMessage) {
 	// Chỉ lưu message type "message", không lưu join/leave notifications
 	if h.chatRepo != nil && msg.Type == "message" {
 		chatMsg := &chat.Message{
-			RoomID:      msg.RoomID,
-			UserID:      msg.UserID,
-			Content:     msg.Message,
-			MessageType: msg.Type,
+			ID:        uuid.New().String(),
+			RoomID:    msg.RoomID,
+			UserID:    msg.UserID,
+			Username:  msg.Username,
+			Content:   msg.Message,
+			ReplyToID: nil,
+			IsEdited:  false,
+			IsDeleted: false,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
 		}
 		if err := h.chatRepo.SaveMessage(context.Background(), chatMsg); err != nil {
 			logger.Errorf("Failed to persist chat message: %v", err)

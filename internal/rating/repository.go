@@ -1,8 +1,8 @@
 // Package rating - Rating Repository
 // Data access layer cho rating system
 // Chức năng:
-//   - CRUD operations for manga ratings
-//   - Aggregate calculations (average, distribution)
+//   - CRUD operations for manga ratings (simplified single rating 1-10)
+//   - Aggregate calculations (average, distribution) from manga table (auto-calculated by triggers)
 //   - User rating lookup
 package rating
 
@@ -12,8 +12,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"mangahub/pkg/models"
+
+	"github.com/google/uuid"
 )
 
 // Repository defines data access operations for ratings
@@ -30,14 +31,11 @@ type Repository interface {
 	// GetByManga retrieves all ratings for a manga with pagination
 	GetByManga(ctx context.Context, mangaID string, limit, offset int) ([]models.RatingWithUser, error)
 
-	// GetAggregate calculates aggregate stats for a manga
-	GetAggregate(ctx context.Context, mangaID string) (*models.RatingAggregate, error)
+	// GetSummary gets rating summary for a manga from manga table (auto-calculated)
+	GetSummary(ctx context.Context, mangaID string) (*models.RatingSummary, error)
 
 	// Delete removes a user's rating
 	Delete(ctx context.Context, userID, mangaID string) error
-
-	// GetTopRatedManga returns manga sorted by rating for leaderboards
-	GetTopRatedManga(ctx context.Context, limit, offset int) ([]models.RatingAggregate, error)
 }
 
 type repository struct {
@@ -50,7 +48,7 @@ func NewRepository(db *sql.DB) Repository {
 }
 
 // CreateOrUpdate creates a new rating or updates existing one
-// Uses UPSERT pattern with UNIQUE(manga_id, user_id) constraint
+// CreateOrUpdate creates or updates a user's rating (simplified single rating 1-10)
 func (r *repository) CreateOrUpdate(ctx context.Context, userID, mangaID string, req models.CreateRatingRequest) (*models.MangaRating, error) {
 	now := time.Now()
 
@@ -71,11 +69,9 @@ func (r *repository) CreateOrUpdate(ctx context.Context, userID, mangaID string,
 		ratingID = uuid.New().String()
 		_, err = r.db.ExecContext(ctx, `
 			INSERT INTO manga_ratings 
-			(id, manga_id, user_id, overall_rating, story_rating, art_rating, 
-			 character_rating, enjoyment_rating, review_text, is_spoiler, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			ratingID, mangaID, userID, req.OverallRating, req.StoryRating, req.ArtRating,
-			req.CharacterRating, req.EnjoymentRating, req.ReviewText, req.IsSpoiler, now, now,
+			(id, manga_id, user_id, rating, review, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			ratingID, mangaID, userID, req.Rating, req.ReviewText, now, now,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("insert rating: %w", err)
@@ -85,13 +81,9 @@ func (r *repository) CreateOrUpdate(ctx context.Context, userID, mangaID string,
 		ratingID = existingID
 		_, err = r.db.ExecContext(ctx, `
 			UPDATE manga_ratings 
-			SET overall_rating = ?, story_rating = ?, art_rating = ?, 
-			    character_rating = ?, enjoyment_rating = ?, review_text = ?, 
-			    is_spoiler = ?, updated_at = ?
+			SET rating = ?, review = ?, updated_at = ?
 			WHERE id = ?`,
-			req.OverallRating, req.StoryRating, req.ArtRating,
-			req.CharacterRating, req.EnjoymentRating, req.ReviewText,
-			req.IsSpoiler, now, ratingID,
+			req.Rating, req.ReviewText, now, ratingID,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("update rating: %w", err)
@@ -105,15 +97,11 @@ func (r *repository) CreateOrUpdate(ctx context.Context, userID, mangaID string,
 func (r *repository) GetByID(ctx context.Context, id string) (*models.MangaRating, error) {
 	var rating models.MangaRating
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, manga_id, user_id, overall_rating, story_rating, art_rating,
-		       character_rating, enjoyment_rating, review_text, is_spoiler,
-		       helpful_count, created_at, updated_at
+		SELECT id, manga_id, user_id, rating, review, created_at, updated_at
 		FROM manga_ratings WHERE id = ?`, id,
 	).Scan(
-		&rating.ID, &rating.MangaID, &rating.UserID, &rating.OverallRating,
-		&rating.StoryRating, &rating.ArtRating, &rating.CharacterRating,
-		&rating.EnjoymentRating, &rating.ReviewText, &rating.IsSpoiler,
-		&rating.HelpfulCount, &rating.CreatedAt, &rating.UpdatedAt,
+		&rating.ID, &rating.MangaID, &rating.UserID, &rating.Rating,
+		&rating.ReviewText, &rating.CreatedAt, &rating.UpdatedAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -128,15 +116,11 @@ func (r *repository) GetByID(ctx context.Context, id string) (*models.MangaRatin
 func (r *repository) GetByUserAndManga(ctx context.Context, userID, mangaID string) (*models.MangaRating, error) {
 	var rating models.MangaRating
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, manga_id, user_id, overall_rating, story_rating, art_rating,
-		       character_rating, enjoyment_rating, review_text, is_spoiler,
-		       helpful_count, created_at, updated_at
+		SELECT id, manga_id, user_id, rating, review, created_at, updated_at
 		FROM manga_ratings WHERE user_id = ? AND manga_id = ?`, userID, mangaID,
 	).Scan(
-		&rating.ID, &rating.MangaID, &rating.UserID, &rating.OverallRating,
-		&rating.StoryRating, &rating.ArtRating, &rating.CharacterRating,
-		&rating.EnjoymentRating, &rating.ReviewText, &rating.IsSpoiler,
-		&rating.HelpfulCount, &rating.CreatedAt, &rating.UpdatedAt,
+		&rating.ID, &rating.MangaID, &rating.UserID, &rating.Rating,
+		&rating.ReviewText, &rating.CreatedAt, &rating.UpdatedAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -150,9 +134,8 @@ func (r *repository) GetByUserAndManga(ctx context.Context, userID, mangaID stri
 // GetByManga retrieves all ratings for a manga with user info
 func (r *repository) GetByManga(ctx context.Context, mangaID string, limit, offset int) ([]models.RatingWithUser, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT r.id, r.manga_id, r.user_id, r.overall_rating, r.story_rating, r.art_rating,
-		       r.character_rating, r.enjoyment_rating, r.review_text, r.is_spoiler,
-		       r.helpful_count, r.created_at, r.updated_at,
+		SELECT r.id, r.manga_id, r.user_id, r.rating, r.review,
+		       r.created_at, r.updated_at,
 		       u.username, u.display_name
 		FROM manga_ratings r
 		JOIN users u ON r.user_id = u.id
@@ -169,10 +152,8 @@ func (r *repository) GetByManga(ctx context.Context, mangaID string, limit, offs
 	for rows.Next() {
 		var r models.RatingWithUser
 		err := rows.Scan(
-			&r.ID, &r.MangaID, &r.UserID, &r.OverallRating,
-			&r.StoryRating, &r.ArtRating, &r.CharacterRating,
-			&r.EnjoymentRating, &r.ReviewText, &r.IsSpoiler,
-			&r.HelpfulCount, &r.CreatedAt, &r.UpdatedAt,
+			&r.ID, &r.MangaID, &r.UserID, &r.Rating, &r.ReviewText,
+			&r.CreatedAt, &r.UpdatedAt,
 			&r.Username, &r.DisplayName,
 		)
 		if err != nil {
@@ -183,40 +164,33 @@ func (r *repository) GetByManga(ctx context.Context, mangaID string, limit, offs
 	return ratings, nil
 }
 
-// GetAggregate calculates aggregate stats for a manga
-func (r *repository) GetAggregate(ctx context.Context, mangaID string) (*models.RatingAggregate, error) {
-	var agg models.RatingAggregate
-	agg.MangaID = mangaID
+// GetSummary gets rating summary from manga table (auto-calculated by triggers)
+func (r *repository) GetSummary(ctx context.Context, mangaID string) (*models.RatingSummary, error) {
+	var summary models.RatingSummary
+	var ratingCount int
+	summary.MangaID = mangaID
 
-	// Get average and count
+	// Get average_rating and rating_count from manga table (auto-calculated by triggers)
 	err := r.db.QueryRowContext(ctx, `
-		SELECT 
-			COALESCE(AVG(overall_rating), 0),
-			COUNT(*),
-			COALESCE(AVG(story_rating), 0),
-			COALESCE(AVG(art_rating), 0),
-			COALESCE(AVG(character_rating), 0),
-			COALESCE(AVG(enjoyment_rating), 0)
-		FROM manga_ratings WHERE manga_id = ?`, mangaID,
-	).Scan(
-		&agg.AverageRating, &agg.TotalRatings,
-		&agg.AverageStory, &agg.AverageArt,
-		&agg.AverageCharacter, &agg.AverageEnjoyment,
-	)
+		SELECT COALESCE(average_rating, 0), COALESCE(rating_count, 0)
+		FROM manga WHERE id = ?`, mangaID,
+	).Scan(&summary.AverageRating, &ratingCount)
 	if err != nil {
-		return nil, fmt.Errorf("get aggregate: %w", err)
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("manga not found")
+		}
+		return nil, fmt.Errorf("get rating summary: %w", err)
 	}
 
-	// Calculate weighted rating using Bayesian average
-	// Using minimum 10 votes and global mean of 6.0
-	agg.WeightedRating = models.CalculateWeightedRating(agg.AverageRating, agg.TotalRatings, 10, 6.0)
+	summary.RatingCount = ratingCount
 
 	// Get rating distribution (count per score 1-10)
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT CAST(overall_rating AS INTEGER) as score, COUNT(*) as cnt
+		SELECT rating, COUNT(*) as cnt
 		FROM manga_ratings 
 		WHERE manga_id = ?
-		GROUP BY CAST(overall_rating AS INTEGER)`, mangaID,
+		GROUP BY rating
+		ORDER BY rating`, mangaID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get distribution: %w", err)
@@ -229,11 +203,11 @@ func (r *repository) GetAggregate(ctx context.Context, mangaID string) (*models.
 			return nil, fmt.Errorf("scan distribution: %w", err)
 		}
 		if score >= 1 && score <= 10 {
-			agg.RatingDistribution[score-1] = count
+			summary.RatingDistribution[score-1] = count
 		}
 	}
 
-	return &agg, nil
+	return &summary, nil
 }
 
 // Delete removes a user's rating for a manga
@@ -253,21 +227,17 @@ func (r *repository) Delete(ctx context.Context, userID, mangaID string) error {
 	return nil
 }
 
-// GetTopRatedManga returns manga sorted by weighted rating for leaderboards
-func (r *repository) GetTopRatedManga(ctx context.Context, limit, offset int) ([]models.RatingAggregate, error) {
+// GetTopRatedManga returns manga sorted by rating for leaderboards
+// This method is not part of the interface but can be added if needed for leaderboard features
+// Currently not used as leaderboards use manga.average_rating directly
+func (r *repository) GetTopRatedManga(ctx context.Context, limit, offset int) ([]models.Manga, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT 
-			manga_id,
-			AVG(overall_rating) as avg_rating,
-			COUNT(*) as total_ratings,
-			AVG(story_rating) as avg_story,
-			AVG(art_rating) as avg_art,
-			AVG(character_rating) as avg_char,
-			AVG(enjoyment_rating) as avg_enjoy
-		FROM manga_ratings
-		GROUP BY manga_id
-		HAVING COUNT(*) >= 1
-		ORDER BY avg_rating DESC, total_ratings DESC
+		SELECT m.id, m.title, m.author, m.artist, m.description, m.cover_url, 
+		       m.status, m.type, m.total_chapters, m.average_rating, m.rating_count, 
+		       m.year, m.created_at, m.updated_at
+		FROM manga m
+		WHERE m.rating_count > 0
+		ORDER BY m.average_rating DESC, m.rating_count DESC
 		LIMIT ? OFFSET ?`, limit, offset,
 	)
 	if err != nil {
@@ -275,18 +245,19 @@ func (r *repository) GetTopRatedManga(ctx context.Context, limit, offset int) ([
 	}
 	defer rows.Close()
 
-	var results []models.RatingAggregate
+	var results []models.Manga
 	for rows.Next() {
-		var agg models.RatingAggregate
+		var manga models.Manga
 		err := rows.Scan(
-			&agg.MangaID, &agg.AverageRating, &agg.TotalRatings,
-			&agg.AverageStory, &agg.AverageArt, &agg.AverageCharacter, &agg.AverageEnjoyment,
+			&manga.ID, &manga.Title, &manga.Author, &manga.Artist, &manga.Description,
+			&manga.CoverURL, &manga.Status, &manga.Type, &manga.TotalChapters,
+			&manga.AverageRating, &manga.RatingCount, &manga.Year,
+			&manga.CreatedAt, &manga.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan top rated: %w", err)
 		}
-		agg.WeightedRating = models.CalculateWeightedRating(agg.AverageRating, agg.TotalRatings, 10, 6.0)
-		results = append(results, agg)
+		results = append(results, manga)
 	}
 	return results, nil
 }

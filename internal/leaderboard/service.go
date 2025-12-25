@@ -41,7 +41,7 @@ type UserLeaderboardEntry struct {
 
 // LeaderboardResponse contains leaderboard data
 type LeaderboardResponse struct {
-	Type      string      `json:"type"` // manga, users, trending
+	Type      string      `json:"type"`             // manga, users, trending
 	Period    string      `json:"period,omitempty"` // all_time, weekly, monthly
 	Entries   interface{} `json:"entries"`
 	UpdatedAt time.Time   `json:"updated_at"`
@@ -208,6 +208,7 @@ func (s *service) GetMostActiveUsers(ctx context.Context, limit, offset int) (*L
 
 // GetTrendingManga returns manga with most activity in last N days
 // Activity = new ratings + new library adds + comments
+// Falls back to top manga by MAL score if no recent activity
 func (s *service) GetTrendingManga(ctx context.Context, limit, offset int, days int) (*LeaderboardResponse, error) {
 	if limit <= 0 {
 		limit = 20
@@ -260,6 +261,43 @@ func (s *service) GetTrendingManga(ctx context.Context, limit, offset int, days 
 		e.Author = author.String
 		entries = append(entries, e)
 		rank++
+	}
+
+	// Fallback: If no trending data, show top manga by rating
+	if len(entries) == 0 {
+		fallbackRows, err := s.db.QueryContext(ctx, `
+			SELECT 
+				m.id, m.title, m.cover_url, m.author,
+				COALESCE(m.rating, 0) as avg_rating,
+				0 as total_ratings,
+				0 as total_readers
+			FROM manga m
+			ORDER BY m.rating DESC, m.title ASC
+			LIMIT ? OFFSET ?`, limit, offset,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("get fallback trending manga: %w", err)
+		}
+		defer fallbackRows.Close()
+
+		for fallbackRows.Next() {
+			var e MangaLeaderboardEntry
+			var coverURL, author sql.NullString
+
+			err := fallbackRows.Scan(
+				&e.MangaID, &e.Title, &coverURL, &author,
+				&e.AverageRating, &e.TotalRatings, &e.TotalReaders,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("scan fallback entry: %w", err)
+			}
+
+			e.Rank = rank
+			e.CoverURL = coverURL.String
+			e.Author = author.String
+			entries = append(entries, e)
+			rank++
+		}
 	}
 
 	period := "weekly"

@@ -13,18 +13,18 @@ import (
 
 // Comment represents a user comment on a manga or chapter
 type Comment struct {
-	ID            string     `json:"id" db:"id"`
-	MangaID       string     `json:"manga_id" db:"manga_id"`
-	ChapterNumber *int       `json:"chapter_number,omitempty" db:"chapter_number"` // nil = manga-level comment
-	UserID        string     `json:"user_id" db:"user_id"`
-	Content       string     `json:"content" db:"content"`
-	IsSpoiler     bool       `json:"is_spoiler" db:"is_spoiler"`
-	ParentID      *string    `json:"parent_id,omitempty" db:"parent_id"` // For threaded replies
-	LikesCount    int        `json:"likes_count" db:"likes_count"`
-	IsEdited      bool       `json:"is_edited" db:"is_edited"`
-	IsDeleted     bool       `json:"is_deleted" db:"is_deleted"`
-	CreatedAt     time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at" db:"updated_at"`
+	ID            string    `json:"id" db:"id"`
+	MangaID       string    `json:"manga_id" db:"manga_id"`
+	ChapterNumber *int      `json:"chapter_number,omitempty" db:"chapter_number"` // nil = manga-level comment
+	UserID        string    `json:"user_id" db:"user_id"`
+	Content       string    `json:"content" db:"content"`
+	IsSpoiler     bool      `json:"is_spoiler" db:"is_spoiler"`
+	ParentID      *string   `json:"parent_id,omitempty" db:"parent_id"` // For threaded replies
+	LikesCount    int       `json:"likes_count" db:"likes_count"`
+	IsEdited      bool      `json:"is_edited" db:"is_edited"`
+	IsDeleted     bool      `json:"is_deleted" db:"is_deleted"`
+	CreatedAt     time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // CommentLike tracks which users liked a comment
@@ -76,30 +76,29 @@ type CommentListResponse struct {
 }
 
 // Activity represents a user action for the activity feed
+// Auto-populated by database triggers
 type Activity struct {
 	ID            string    `json:"id" db:"id"`
 	UserID        string    `json:"user_id" db:"user_id"`
-	ActionType    string    `json:"action_type" db:"action_type"` // read, rate, comment, add_library, etc.
-	MangaID       *string   `json:"manga_id,omitempty" db:"manga_id"`
+	Username      string    `json:"username" db:"username"`
+	ActivityType  string    `json:"activity_type" db:"activity_type"` // comment, rating, progress, list_add
+	MangaID       string    `json:"manga_id" db:"manga_id"`
+	MangaTitle    string    `json:"manga_title" db:"manga_title"`
 	ChapterNumber *int      `json:"chapter_number,omitempty" db:"chapter_number"`
-	Details       string    `json:"details,omitempty" db:"details"` // JSON string for extra data
-	IsPublic      bool      `json:"is_public" db:"is_public"`
+	Rating        *float64  `json:"rating,omitempty" db:"rating"`
+	CommentText   string    `json:"comment_text,omitempty" db:"comment_text"` // Empty string if null
 	CreatedAt     time.Time `json:"created_at" db:"created_at"`
 }
 
-// ActivityWithDetails includes related info for display
+// ActivityWithDetails includes related info for display (kept for compatibility)
 type ActivityWithDetails struct {
 	Activity
-	Username   string `json:"username"`
-	MangaTitle string `json:"manga_title,omitempty"`
 }
 
 // Activity action types
 const (
-	ActivityRead       = "read"        // User read a chapter
-	ActivityRate       = "rate"        // User rated a manga
-	ActivityComment    = "comment"     // User commented
-	ActivityAddLibrary = "add_library" // User added to library
-	ActivityComplete   = "complete"    // User completed a manga
-	ActivityFollow     = "follow"      // User followed another user
+	ActivityComment  = "comment"  // User commented
+	ActivityRating   = "rating"   // User rated a manga
+	ActivityProgress = "progress" // User updated reading progress
+	ActivityListAdd  = "list_add" // User added manga to custom list
 )

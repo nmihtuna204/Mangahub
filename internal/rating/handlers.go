@@ -8,6 +8,7 @@ package rating
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"mangahub/internal/auth"
@@ -47,42 +48,41 @@ func NewHandlerWithActivity(svc Service, activityRecorder ActivityRecorder, mang
 
 // SubmitRating handles POST /manga/:id/ratings
 // Creates or updates a user's rating for a manga
-// Request body: { overall_rating, story_rating, art_rating, ... }
+// Request body: { rating, review_text, is_spoiler }
 func (h *Handler) SubmitRating(c *gin.Context) {
 	// Get authenticated user
 	user := auth.GetCurrentUser(c)
 	if user == nil {
-		c.JSON(http.StatusUnauthorized,
-			models.NewErrorResponse(models.ErrCodeUnauthorized, "authentication required", nil))
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "authentication required",
+		})
 		return
 	}
 
 	// Get manga ID from URL
 	mangaID := c.Param("id")
 	if mangaID == "" {
-		c.JSON(http.StatusBadRequest,
-			models.NewErrorResponse(models.ErrCodeBadRequest, "manga_id is required", nil))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "manga_id is required",
+		})
 		return
 	}
 
 	// Parse request body
 	var req models.CreateRatingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest,
-			models.NewErrorResponse(models.ErrCodeBadRequest, "invalid JSON body", map[string]interface{}{"error": err.Error()}))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": err.Error(),
+		})
 		return
 	}
 
 	// Submit rating
 	rating, err := h.svc.Rate(c.Request.Context(), user.ID, mangaID, req)
 	if err != nil {
-		if appErr, ok := err.(*models.AppError); ok {
-			c.JSON(appErr.StatusCode,
-				models.NewErrorResponse(appErr.Code, appErr.Message, appErr.Details))
-			return
-		}
-		c.JSON(http.StatusInternalServerError,
-			models.NewErrorResponse(models.ErrCodeInternal, "failed to submit rating", nil))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to submit rating",
+		})
 		return
 	}
 
@@ -97,49 +97,60 @@ func (h *Handler) SubmitRating(c *gin.Context) {
 					user.Username,
 					rating.MangaID,
 					manga.Title,
-					rating.OverallRating,
+					float64(rating.Rating),
 				)
 			}
 		}()
 	}
 
-	c.JSON(http.StatusOK,
-		models.NewSuccessResponse(rating, "rating submitted successfully"))
+	c.JSON(http.StatusOK, gin.H{
+		"data":    rating,
+		"message": "rating submitted successfully",
+	})
 }
 
 // GetRatings handles GET /manga/:id/ratings
 // Returns aggregated rating stats + recent reviews for a manga
-// Optional: includes current user's rating if authenticated
+// Query params: ?page=1&limit=20
 func (h *Handler) GetRatings(c *gin.Context) {
 	// Get manga ID from URL
 	mangaID := c.Param("id")
 	if mangaID == "" {
-		c.JSON(http.StatusBadRequest,
-			models.NewErrorResponse(models.ErrCodeBadRequest, "manga_id is required", nil))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "manga_id is required",
+		})
 		return
 	}
 
-	// Get current user ID if authenticated (optional)
-	var currentUserID string
-	if user := auth.GetCurrentUser(c); user != nil {
-		currentUserID = user.ID
-	}
-
-	// Get rating summary
-	summary, err := h.svc.GetRatingSummary(c.Request.Context(), mangaID, currentUserID)
-	if err != nil {
-		if appErr, ok := err.(*models.AppError); ok {
-			c.JSON(appErr.StatusCode,
-				models.NewErrorResponse(appErr.Code, appErr.Message, appErr.Details))
-			return
+	// Parse pagination from query params
+	page := 1
+	limit := 20
+	if p := c.Query("page"); p != "" {
+		if val, err := parseInt(p); err == nil && val > 0 {
+			page = val
 		}
-		c.JSON(http.StatusInternalServerError,
-			models.NewErrorResponse(models.ErrCodeInternal, "failed to get ratings", nil))
+	}
+	if l := c.Query("limit"); l != "" {
+		if val, err := parseInt(l); err == nil && val > 0 && val <= 100 {
+			limit = val
+		}
+	}
+
+	offset := (page - 1) * limit
+
+	// Get ratings summary and recent ratings
+	response, err := h.svc.GetMangaRatings(c.Request.Context(), mangaID, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to get ratings",
+		})
 		return
 	}
 
-	c.JSON(http.StatusOK,
-		models.NewSuccessResponse(summary, "ratings retrieved"))
+	c.JSON(http.StatusOK, gin.H{
+		"data":    response,
+		"message": "ratings retrieved",
+	})
 }
 
 // DeleteRating handles DELETE /manga/:id/ratings
@@ -148,35 +159,42 @@ func (h *Handler) DeleteRating(c *gin.Context) {
 	// Get authenticated user
 	user := auth.GetCurrentUser(c)
 	if user == nil {
-		c.JSON(http.StatusUnauthorized,
-			models.NewErrorResponse(models.ErrCodeUnauthorized, "authentication required", nil))
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "authentication required",
+		})
 		return
 	}
 
 	// Get manga ID from URL
 	mangaID := c.Param("id")
 	if mangaID == "" {
-		c.JSON(http.StatusBadRequest,
-			models.NewErrorResponse(models.ErrCodeBadRequest, "manga_id is required", nil))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "manga_id is required",
+		})
 		return
 	}
 
 	// Delete rating
 	err := h.svc.DeleteRating(c.Request.Context(), user.ID, mangaID)
 	if err != nil {
-		if appErr, ok := err.(*models.AppError); ok {
-			c.JSON(appErr.StatusCode,
-				models.NewErrorResponse(appErr.Code, appErr.Message, appErr.Details))
-			return
-		}
-		c.JSON(http.StatusInternalServerError,
-			models.NewErrorResponse(models.ErrCodeInternal, "failed to delete rating", nil))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to delete rating",
+		})
 		return
 	}
 
-	c.JSON(http.StatusOK,
-		models.NewSuccessResponse(map[string]interface{}{
+	c.JSON(http.StatusOK, gin.H{
+		"data": map[string]interface{}{
 			"manga_id": mangaID,
-			"deleted":  true,
-		}, "rating deleted successfully"))
+			"removed":  true,
+		},
+		"message": "rating removed successfully",
+	})
+}
+
+// Helper function to parse integer from string
+func parseInt(s string) (int, error) {
+	var val int
+	_, err := fmt.Sscanf(s, "%d", &val)
+	return val, err
 }

@@ -63,7 +63,7 @@ func main() {
 	logger.Infof("Initializing protocol bridge (TCP:%d, UDP:%d, gRPC:%d)", cfg.TCP.Port, cfg.UDP.Port, cfg.GRPC.Port)
 	// UDP client connection to standalone UDP server
 	udpClient := udp.NewNotificationServer(cfg.UDP.Host, cfg.UDP.Port)
-	
+
 	protocolBridge, err := protocols.NewProtocolBridge(
 		cfg.TCP.Host, cfg.TCP.Port,
 		udpClient,
@@ -208,7 +208,7 @@ func main() {
 
 	// Leaderboard routes (public)
 	// GET /leaderboards/manga - Top rated manga
-	// GET /leaderboards/users - Most active users  
+	// GET /leaderboards/users - Most active users
 	// GET /leaderboards/trending - Trending manga
 	api.GET("/leaderboards/manga", leaderboardHandler.GetTopRatedManga)
 	api.GET("/leaderboards/users", leaderboardHandler.GetMostActiveUsers)
@@ -231,9 +231,9 @@ func main() {
 	logger.Infof("HTTP API server listening on %s", srv.Addr)
 	logger.Infof("WebSocket chat available at ws://%s/ws/chat?room_id=<room>", srv.Addr)
 	if protocolBridge != nil {
-		logger.Infof("🔄 Phase 7: All 5 protocols integrated (HTTP + TCP + UDP + WebSocket + gRPC)")
+		logger.Infof("🔄 All 5 protocols integrated (HTTP + TCP + UDP + WebSocket + gRPC)")
 	}
-	logger.Infof("✨ Phase 2: Social features enabled (Rating, Comment, Leaderboard, Chat persistence)")
+	logger.Infof("✨ Social features enabled (Rating, Comment, Leaderboard, Chat persistence)")
 
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Fatalf("server error: %v", err)

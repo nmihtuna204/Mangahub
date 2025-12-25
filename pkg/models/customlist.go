@@ -10,11 +10,8 @@ type CustomList struct {
 	UserID      string    `json:"user_id" db:"user_id"`
 	Name        string    `json:"name" db:"name"`
 	Description string    `json:"description" db:"description"`
-	IconEmoji   string    `json:"icon_emoji" db:"icon_emoji"`
 	IsPublic    bool      `json:"is_public" db:"is_public"`
-	IsDefault   bool      `json:"is_default" db:"is_default"` // system lists like "Favorites"
 	SortOrder   int       `json:"sort_order" db:"sort_order"`
-	MangaCount  int       `json:"manga_count" db:"manga_count"`
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
@@ -24,10 +21,9 @@ type CustomListItem struct {
 	ID        string    `json:"id" db:"id"`
 	ListID    string    `json:"list_id" db:"list_id"`
 	MangaID   string    `json:"manga_id" db:"manga_id"`
-	SortOrder int       `json:"sort_order" db:"sort_order"`
 	Notes     string    `json:"notes" db:"notes"`
+	SortOrder int       `json:"sort_order" db:"sort_order"`
 	AddedAt   time.Time `json:"added_at" db:"added_at"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
 }
 
 // CustomListWithManga combines list item with manga details
@@ -46,7 +42,6 @@ type CustomListWithItems struct {
 type CreateListRequest struct {
 	Name        string `json:"name" validate:"required,min=1,max=100"`
 	Description string `json:"description,omitempty" validate:"max=500"`
-	IconEmoji   string `json:"icon_emoji,omitempty"`
 	IsPublic    bool   `json:"is_public"`
 }
 
@@ -54,7 +49,6 @@ type CreateListRequest struct {
 type UpdateListRequest struct {
 	Name        *string `json:"name,omitempty" validate:"omitempty,min=1,max=100"`
 	Description *string `json:"description,omitempty" validate:"omitempty,max=500"`
-	IconEmoji   *string `json:"icon_emoji,omitempty"`
 	IsPublic    *bool   `json:"is_public,omitempty"`
 }
 

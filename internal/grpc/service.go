@@ -12,7 +12,6 @@ package grpc
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 
 	pb "mangahub/internal/grpc/pb"
@@ -39,13 +38,13 @@ func (s *MangaServiceServer) GetManga(ctx context.Context, req *pb.GetMangaReque
 	var manga models.Manga
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, title, author, artist, description, cover_url, status, type,
-		       genres, total_chapters, rating, year
+		       total_chapters, average_rating, rating_count, year
 		FROM manga WHERE id = ?`, req.MangaId)
 
 	if err := row.Scan(
 		&manga.ID, &manga.Title, &manga.Author, &manga.Artist, &manga.Description,
-		&manga.CoverURL, &manga.Status, &manga.Type, &manga.GenresJSON,
-		&manga.TotalChapters, &manga.Rating, &manga.Year,
+		&manga.CoverURL, &manga.Status, &manga.Type,
+		&manga.TotalChapters, &manga.AverageRating, &manga.RatingCount, &manga.Year,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			logger.Warnf("gRPC: Manga not found: %s", req.MangaId)
@@ -55,9 +54,20 @@ func (s *MangaServiceServer) GetManga(ctx context.Context, req *pb.GetMangaReque
 		return nil, err
 	}
 
-	// Parse genres JSON
-	if manga.GenresJSON != "" {
-		_ = json.Unmarshal([]byte(manga.GenresJSON), &manga.Genres)
+	// Load genres via separate query
+	var genres []*pb.Genre
+	genreRows, err := s.db.QueryContext(ctx, `
+		SELECT g.id, g.name, g.slug FROM genres g
+		INNER JOIN manga_genres mg ON g.id = mg.genre_id
+		WHERE mg.manga_id = ?`, req.MangaId)
+	if err == nil {
+		defer genreRows.Close()
+		for genreRows.Next() {
+			var genre pb.Genre
+			if err := genreRows.Scan(&genre.Id, &genre.Name, &genre.Slug); err == nil {
+				genres = append(genres, &genre)
+			}
+		}
 	}
 
 	return &pb.MangaResponse{
@@ -69,10 +79,11 @@ func (s *MangaServiceServer) GetManga(ctx context.Context, req *pb.GetMangaReque
 		CoverUrl:      manga.CoverURL,
 		Status:        manga.Status,
 		Type:          manga.Type,
-		Genres:        manga.Genres,
 		TotalChapters: int32(manga.TotalChapters),
-		Rating:        manga.Rating,
+		AverageRating: manga.AverageRating,
+		RatingCount:   int32(manga.RatingCount),
 		Year:          int32(manga.Year),
+		Genres:        genres,
 	}, nil
 }
 
@@ -123,7 +134,7 @@ func (s *MangaServiceServer) SearchManga(ctx context.Context, req *pb.SearchRequ
 	// Get paginated results
 	listSQL := fmt.Sprintf(`
 		SELECT id, title, author, artist, description, cover_url, status, type,
-		       genres, total_chapters, rating, year
+		       total_chapters, average_rating, rating_count, year
 		FROM manga
 		WHERE %s
 		ORDER BY title ASC
@@ -143,15 +154,27 @@ func (s *MangaServiceServer) SearchManga(ctx context.Context, req *pb.SearchRequ
 		var manga models.Manga
 		if err := rows.Scan(
 			&manga.ID, &manga.Title, &manga.Author, &manga.Artist, &manga.Description,
-			&manga.CoverURL, &manga.Status, &manga.Type, &manga.GenresJSON,
-			&manga.TotalChapters, &manga.Rating, &manga.Year,
+			&manga.CoverURL, &manga.Status, &manga.Type,
+			&manga.TotalChapters, &manga.AverageRating, &manga.RatingCount, &manga.Year,
 		); err != nil {
 			logger.Errorf("gRPC: Scan error: %v", err)
 			return nil, err
 		}
 
-		if manga.GenresJSON != "" {
-			_ = json.Unmarshal([]byte(manga.GenresJSON), &manga.Genres)
+		// Load genres for each manga
+		var genres []*pb.Genre
+		genreRows, err := s.db.QueryContext(ctx, `
+			SELECT g.id, g.name, g.slug FROM genres g
+			INNER JOIN manga_genres mg ON g.id = mg.genre_id
+			WHERE mg.manga_id = ?`, manga.ID)
+		if err == nil {
+			defer genreRows.Close()
+			for genreRows.Next() {
+				var genre pb.Genre
+				if err := genreRows.Scan(&genre.Id, &genre.Name, &genre.Slug); err == nil {
+					genres = append(genres, &genre)
+				}
+			}
 		}
 
 		mangaList = append(mangaList, &pb.MangaResponse{
@@ -163,10 +186,11 @@ func (s *MangaServiceServer) SearchManga(ctx context.Context, req *pb.SearchRequ
 			CoverUrl:      manga.CoverURL,
 			Status:        manga.Status,
 			Type:          manga.Type,
-			Genres:        manga.Genres,
 			TotalChapters: int32(manga.TotalChapters),
-			Rating:        manga.Rating,
+			AverageRating: manga.AverageRating,
+			RatingCount:   int32(manga.RatingCount),
 			Year:          int32(manga.Year),
+			Genres:        genres,
 		})
 	}
 
@@ -212,9 +236,9 @@ func (s *MangaServiceServer) UpdateProgress(ctx context.Context, req *pb.Progres
 		newID := fmt.Sprintf("%s-%s", userID, req.MangaId)
 		_, err = s.db.ExecContext(ctx, `
 			INSERT INTO reading_progress
-			(id, user_id, manga_id, current_chapter, status, rating, last_read_at, created_at, updated_at, sync_version)
-			VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'), 1)`,
-			newID, userID, req.MangaId, req.CurrentChapter, req.Status, req.Rating,
+			(id, user_id, manga_id, current_chapter, status, last_read_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))`,
+			newID, userID, req.MangaId, req.CurrentChapter, req.Status,
 		)
 		if err != nil {
 			logger.Errorf("gRPC: Insert error: %v", err)
@@ -225,10 +249,10 @@ func (s *MangaServiceServer) UpdateProgress(ctx context.Context, req *pb.Progres
 		// Update existing progress
 		_, err = s.db.ExecContext(ctx, `
 			UPDATE reading_progress
-			SET current_chapter = ?, status = ?, rating = ?, last_read_at = datetime('now'), 
-			    updated_at = datetime('now'), sync_version = sync_version + 1
+			SET current_chapter = ?, status = ?, last_read_at = datetime('now'), 
+			    updated_at = datetime('now')
 			WHERE id = ?`,
-			req.CurrentChapter, req.Status, req.Rating, existingID,
+			req.CurrentChapter, req.Status, existingID,
 		)
 		if err != nil {
 			logger.Errorf("gRPC: Update error: %v", err)
@@ -244,7 +268,6 @@ func (s *MangaServiceServer) UpdateProgress(ctx context.Context, req *pb.Progres
 		MangaId:        req.MangaId,
 		CurrentChapter: req.CurrentChapter,
 		Status:         req.Status,
-		Rating:         req.Rating,
 		Timestamp:      0, // Set by server
 	}, nil
 }

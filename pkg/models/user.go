@@ -11,8 +11,6 @@ type User struct {
 	Email        string    `json:"email" db:"email" validate:"required,email"`
 	PasswordHash string    `json:"-" db:"password_hash"`
 	DisplayName  string    `json:"display_name" db:"display_name"`
-	Bio          string    `json:"bio" db:"bio"`
-	AvatarURL    string    `json:"avatar_url" db:"avatar_url"`
 	Role         string    `json:"role" db:"role"` // user, admin
 	IsActive     bool      `json:"is_active" db:"is_active"`
 	CreatedAt    time.Time `json:"created_at" db:"created_at"`
@@ -25,7 +23,6 @@ type UserProfile struct {
 	ID          string     `json:"id"`
 	Username    string     `json:"username"`
 	DisplayName string     `json:"display_name"`
-	Bio         string     `json:"bio"`
 	AvatarURL   string     `json:"avatar_url"`
 	CreatedAt   time.Time  `json:"created_at"`
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`

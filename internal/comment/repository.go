@@ -127,7 +127,7 @@ func (r *repository) GetByManga(ctx context.Context, mangaID string, chapterNumb
 		query = `
 			SELECT c.id, c.manga_id, c.chapter_number, c.user_id, c.content, c.is_spoiler,
 			       c.parent_id, c.likes_count, c.is_edited, c.is_deleted, c.created_at, c.updated_at,
-			       u.username, u.display_name, COALESCE(u.avatar_url, '')
+			       u.username, u.display_name
 			FROM comments c
 			JOIN users u ON c.user_id = u.id
 			WHERE c.manga_id = ? AND c.chapter_number = ? AND c.parent_id IS NULL AND c.is_deleted = 0
@@ -139,7 +139,7 @@ func (r *repository) GetByManga(ctx context.Context, mangaID string, chapterNumb
 		query = `
 			SELECT c.id, c.manga_id, c.chapter_number, c.user_id, c.content, c.is_spoiler,
 			       c.parent_id, c.likes_count, c.is_edited, c.is_deleted, c.created_at, c.updated_at,
-			       u.username, u.display_name, COALESCE(u.avatar_url, '')
+			       u.username, u.display_name
 			FROM comments c
 			JOIN users u ON c.user_id = u.id
 			WHERE c.manga_id = ? AND c.chapter_number IS NULL AND c.parent_id IS NULL AND c.is_deleted = 0
@@ -162,7 +162,7 @@ func (r *repository) GetReplies(ctx context.Context, parentID string) ([]models.
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT c.id, c.manga_id, c.chapter_number, c.user_id, c.content, c.is_spoiler,
 		       c.parent_id, c.likes_count, c.is_edited, c.is_deleted, c.created_at, c.updated_at,
-		       u.username, u.display_name, COALESCE(u.avatar_url, '')
+		       u.username, u.display_name
 		FROM comments c
 		JOIN users u ON c.user_id = u.id
 		WHERE c.parent_id = ? AND c.is_deleted = 0
@@ -187,7 +187,7 @@ func (r *repository) scanComments(rows *sql.Rows) ([]models.CommentWithUser, err
 		err := rows.Scan(
 			&c.ID, &c.MangaID, &chapterNum, &c.UserID, &c.Content, &c.IsSpoiler,
 			&parentIDStr, &c.LikesCount, &c.IsEdited, &c.IsDeleted, &c.CreatedAt, &c.UpdatedAt,
-			&c.Username, &c.DisplayName, &c.AvatarURL,
+			&c.Username, &c.DisplayName,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan comment: %w", err)
@@ -200,6 +200,8 @@ func (r *repository) scanComments(rows *sql.Rows) ([]models.CommentWithUser, err
 		if parentIDStr.Valid {
 			c.ParentID = &parentIDStr.String
 		}
+		// Avatar can be generated from external service (Gravatar, etc.)
+		c.AvatarURL = ""
 
 		comments = append(comments, c)
 	}

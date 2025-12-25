@@ -100,7 +100,7 @@ func TestGRPCGetManga(t *testing.T) {
 
 	// Try to get a manga (may not exist, but should not error)
 	resp, err := client.GetManga(ctx, &pb.GetMangaRequest{
-		Id: "one-piece",
+		MangaId: "one-piece",
 	})
 
 	if err == nil {

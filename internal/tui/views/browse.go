@@ -148,8 +148,8 @@ func (m BrowseModel) Init() tea.Cmd {
 func (m BrowseModel) loadCategoryManga(category string) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		// Search by genre
-		results, _, err := m.client.SearchManga(ctx, category, 1, 10)
+		// Search by genre - the API will match genres in the genres JSON array
+		results, _, err := m.client.SearchMangaByGenre(ctx, category, 1, 20)
 		if err != nil {
 			return BrowseErrorMsg{Error: err}
 		}

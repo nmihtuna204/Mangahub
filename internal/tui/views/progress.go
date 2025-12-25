@@ -275,9 +275,8 @@ func (m ProgressModel) saveProgress() tea.Cmd {
 
 		status := ReadingStatuses[m.currentStatus]
 
-		// Note: Status update may need to be separate API call
-		// For now, just update chapter progress
-		err = m.client.UpdateProgress(ctx, m.mangaID, chapter)
+		// Update progress with chapter, status, and favorite flag
+		err = m.client.UpdateProgress(ctx, m.mangaID, chapter, status, false)
 		if err != nil {
 			return ProgressErrorMsg{Error: err}
 		}

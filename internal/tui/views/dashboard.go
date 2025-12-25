@@ -150,7 +150,7 @@ func (m DashboardModel) loadDashboardData() tea.Msg {
 						MangaID:        entry.MangaID,
 						Title:          entry.Manga.Title,
 						CurrentChapter: entry.CurrentChapter,
-						TotalChapters:  entry.TotalChapters,
+						TotalChapters:  entry.Manga.TotalChapters, // Get from manga, not entry
 						LastReadAt:     entry.LastReadAt,
 					})
 				}
@@ -170,17 +170,56 @@ func (m DashboardModel) loadDashboardData() tea.Msg {
 		}
 	}
 
-	// Generate mock activity for now (would come from activity API)
-	activity = []ActivityEntry{
-		{Time: time.Now().Add(-3 * time.Minute), User: "reader1", Action: "rated One Piece 5★"},
-		{Time: time.Now().Add(-1 * time.Hour), User: "mangafan", Action: "added Chainsaw Man to library"},
-		{Time: time.Now().Add(-2 * time.Hour), User: "system", Action: "New chapter: Jujutsu Kaisen 260"},
+	// Load real activities from API
+	activities, err := m.client.GetActivities(ctx, 10)
+	if err == nil && len(activities) > 0 {
+		for _, a := range activities {
+			action := formatActivityAction(a.ActivityType, a.MangaTitle, a.Rating, a.Chapter)
+			activity = append(activity, ActivityEntry{
+				Time:   a.CreatedAt,
+				User:   a.Username,
+				Action: action,
+			})
+		}
+	}
+
+	// Fallback to sample activities if no real data
+	if len(activity) == 0 {
+		activity = []ActivityEntry{
+			{Time: time.Now().Add(-3 * time.Minute), User: "reader1", Action: "rated One Piece 5★"},
+			{Time: time.Now().Add(-1 * time.Hour), User: "mangafan", Action: "added Chainsaw Man to library"},
+			{Time: time.Now().Add(-2 * time.Hour), User: "system", Action: "New chapter: Jujutsu Kaisen 260"},
+		}
 	}
 
 	return DashboardDataLoadedMsg{
 		Reading:  reading,
 		Trending: trending,
 		Activity: activity,
+	}
+}
+
+// formatActivityAction converts activity type to human-readable action
+func formatActivityAction(activityType, mangaTitle string, rating *float64, chapter *int) string {
+	switch activityType {
+	case "manga_rated":
+		if rating != nil {
+			return fmt.Sprintf("rated %s %.1f★", mangaTitle, *rating)
+		}
+		return fmt.Sprintf("rated %s", mangaTitle)
+	case "chapter_read":
+		if chapter != nil {
+			return fmt.Sprintf("read Ch.%d of %s", *chapter, mangaTitle)
+		}
+		return fmt.Sprintf("is reading %s", mangaTitle)
+	case "manga_completed":
+		return fmt.Sprintf("completed %s", mangaTitle)
+	case "comment_added":
+		return fmt.Sprintf("commented on %s", mangaTitle)
+	case "library_add":
+		return fmt.Sprintf("added %s to library", mangaTitle)
+	default:
+		return fmt.Sprintf("%s %s", activityType, mangaTitle)
 	}
 }
 

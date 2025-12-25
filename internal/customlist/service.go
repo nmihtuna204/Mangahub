@@ -35,14 +35,7 @@ func (s *Service) CreateList(ctx context.Context, userID string, req *models.Cre
 		UserID:      userID,
 		Name:        req.Name,
 		Description: req.Description,
-		IconEmoji:   req.IconEmoji,
 		IsPublic:    req.IsPublic,
-		IsDefault:   false,
-	}
-
-	// Set default emoji if not provided
-	if list.IconEmoji == "" {
-		list.IconEmoji = "📚"
 	}
 
 	if err := s.repo.CreateList(list); err != nil {
@@ -54,11 +47,6 @@ func (s *Service) CreateList(ctx context.Context, userID string, req *models.Cre
 
 // GetUserLists returns all lists for a user
 func (s *Service) GetUserLists(ctx context.Context, userID string) (*models.CustomListsResponse, error) {
-	// Ensure default lists exist
-	if err := s.repo.EnsureDefaultLists(userID); err != nil {
-		return nil, err
-	}
-
 	lists, err := s.repo.GetUserLists(userID)
 	if err != nil {
 		return nil, err
@@ -118,9 +106,6 @@ func (s *Service) UpdateList(ctx context.Context, listID, userID string, req *mo
 	if list.UserID != userID {
 		return nil, fmt.Errorf("unauthorized")
 	}
-	if list.IsDefault {
-		return nil, fmt.Errorf("cannot modify default lists")
-	}
 
 	// Apply updates
 	if req.Name != nil {
@@ -128,9 +113,6 @@ func (s *Service) UpdateList(ctx context.Context, listID, userID string, req *mo
 	}
 	if req.Description != nil {
 		list.Description = *req.Description
-	}
-	if req.IconEmoji != nil {
-		list.IconEmoji = *req.IconEmoji
 	}
 	if req.IsPublic != nil {
 		list.IsPublic = *req.IsPublic
@@ -167,9 +149,4 @@ func (s *Service) ReorderList(ctx context.Context, listID, userID string, req *m
 		return fmt.Errorf("item_ids is required")
 	}
 	return s.repo.ReorderListItems(listID, userID, req.ItemIDs)
-}
-
-// EnsureDefaultLists creates default lists for a user
-func (s *Service) EnsureDefaultLists(ctx context.Context, userID string) error {
-	return s.repo.EnsureDefaultLists(userID)
 }

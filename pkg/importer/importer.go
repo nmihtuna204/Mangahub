@@ -11,7 +11,6 @@ package importer
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -69,16 +68,10 @@ func (i *Importer) ResetStats() {
 
 // ConvertToManga converts ExternalMangaData to Manga model
 // Handles field mapping and nullable fields
+// Note: Genres are stored separately in manga_genres table (normalized)
+// Note: Ratings are stored separately in manga_ratings table, average_rating auto-calculated by triggers
 func ConvertToManga(ext models.ExternalMangaData) models.Manga {
 	now := time.Now()
-
-	// Convert genres slice to JSON string
-	genresJSON := "[]"
-	if len(ext.Genres) > 0 {
-		if data, err := json.Marshal(ext.Genres); err == nil {
-			genresJSON = string(data)
-		}
-	}
 
 	// Get first author or empty
 	author := ""
@@ -104,10 +97,10 @@ func ConvertToManga(ext models.ExternalMangaData) models.Manga {
 		CoverURL:      ext.CoverURL,
 		Status:        status,
 		Type:          mangaType,
-		Genres:        ext.Genres,
-		GenresJSON:    genresJSON,
+		Genres:        []models.Genre{}, // Populated separately via manga_genres table
 		TotalChapters: ext.ChapterCount,
-		Rating:        ext.Rating,
+		AverageRating: 0,  // Auto-calculated via triggers
+		RatingCount:   0,  // Auto-calculated via triggers
 		Year:          ext.Year,
 		CreatedAt:     now,
 		UpdatedAt:     now,
@@ -217,16 +210,20 @@ func (i *Importer) findExistingManga(ctx context.Context, title string) (string,
 }
 
 // insertManga inserts a new manga into the database
+// Note: Genres must be inserted separately via manga_genres junction table
+// Note: Ratings must be inserted separately via manga_ratings table
 func (i *Importer) insertManga(ctx context.Context, m models.Manga) error {
 	_, err := i.db.ExecContext(ctx, `
-		INSERT INTO manga (id, title, author, artist, description, cover_url, status, type, genres, total_chapters, rating, year, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.Title, m.Author, m.Artist, m.Description, m.CoverURL, m.Status, m.Type, m.GenresJSON, m.TotalChapters, m.Rating, m.Year, m.CreatedAt, m.UpdatedAt,
+		INSERT INTO manga (id, title, author, artist, description, cover_url, status, type, total_chapters, year, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.Title, m.Author, m.Artist, m.Description, m.CoverURL, m.Status, m.Type, m.TotalChapters, m.Year, m.CreatedAt, m.UpdatedAt,
 	)
 	return err
 }
 
 // updateManga updates an existing manga in the database
+// Note: Genres should be updated separately via manga_genres junction table
+// Note: Ratings should be updated separately via manga_ratings table
 func (i *Importer) updateManga(ctx context.Context, m models.Manga) error {
 	_, err := i.db.ExecContext(ctx, `
 		UPDATE manga SET 
@@ -234,15 +231,12 @@ func (i *Importer) updateManga(ctx context.Context, m models.Manga) error {
 			description = COALESCE(NULLIF(?, ''), description),
 			cover_url = COALESCE(NULLIF(?, ''), cover_url),
 			status = ?,
-			genres = ?,
 			total_chapters = CASE WHEN ? > total_chapters THEN ? ELSE total_chapters END,
-			rating = CASE WHEN ? > 0 THEN ? ELSE rating END,
 			year = COALESCE(NULLIF(?, 0), year),
 			updated_at = ?
 		WHERE id = ?`,
-		m.Author, m.Description, m.CoverURL, m.Status, m.GenresJSON,
+		m.Author, m.Description, m.CoverURL, m.Status,
 		m.TotalChapters, m.TotalChapters,
-		m.Rating, m.Rating,
 		m.Year, m.UpdatedAt, m.ID,
 	)
 	return err
@@ -310,15 +304,18 @@ func sqlNullInt(value int) interface{} {
 func (i *Importer) PreviewImport(items []models.ExternalMangaData) []MangaPreview {
 	previews := make([]MangaPreview, 0, len(items))
 	for _, ext := range items {
-		manga := ConvertToManga(ext)
+		author := ""
+		if len(ext.Authors) > 0 {
+			author = ext.Authors[0]
+		}
 		previews = append(previews, MangaPreview{
-			Title:      manga.Title,
-			Author:     manga.Author,
-			Status:     manga.Status,
-			Rating:     manga.Rating,
-			Year:       manga.Year,
-			Genres:     manga.Genres,
-			Chapters:   manga.TotalChapters,
+			Title:      ext.Title,
+			Author:     author,
+			Status:     normalizeStatus(ext.Status),
+			Rating:     ext.Rating,
+			Year:       ext.Year,
+			Genres:     ext.Genres,
+			Chapters:   ext.ChapterCount,
 			Source:     ext.Source,
 			ExternalID: ext.ExternalID,
 			HasCover:   ext.CoverURL != "",

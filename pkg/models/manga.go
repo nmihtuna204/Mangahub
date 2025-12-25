@@ -12,13 +12,13 @@ type Manga struct {
 	Artist        string    `json:"artist" db:"artist"`
 	Description   string    `json:"description" db:"description"`
 	CoverURL      string    `json:"cover_url" db:"cover_url"`
-	Status        string    `json:"status" db:"status"` // ongoing, completed, hiatus
-	Type          string    `json:"type" db:"type"`     // manga, manhwa, manhua
-	Genres        []string  `json:"genres" db:"-"`      // stored as JSON in DB
-	GenresJSON    string    `json:"-" db:"genres"`
+	Status        string    `json:"status" db:"status"` // ongoing, completed, hiatus, cancelled
+	Type          string    `json:"type" db:"type"`     // manga, manhwa, manhua, novel
 	TotalChapters int       `json:"total_chapters" db:"total_chapters"`
-	Rating        float64   `json:"rating" db:"rating"`
+	AverageRating float64   `json:"average_rating" db:"average_rating"` // 0.0 - 10.0, auto-calculated
+	RatingCount   int       `json:"rating_count" db:"rating_count"`     // number of ratings, auto-calculated
 	Year          int       `json:"year" db:"year"`
+	Genres        []Genre   `json:"genres,omitempty" db:"-"` // populated via join with manga_genres
 	CreatedAt     time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at" db:"updated_at"`
 }

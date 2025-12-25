@@ -122,7 +122,6 @@ func (b *ProtocolBridge) auditViaGRPC(userID, mangaID string, chapter int32, sta
 		MangaId:        mangaID,
 		CurrentChapter: chapter,
 		Status:         status,
-		Rating:         0,
 	})
 	if err != nil {
 		logger.Warnf("Bridge: gRPC audit failed: %v", err)

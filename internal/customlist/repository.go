@@ -32,12 +32,12 @@ func (r *Repository) CreateList(list *models.CustomList) error {
 	list.UpdatedAt = time.Now()
 
 	query := `
-		INSERT INTO custom_lists (id, user_id, name, description, icon_emoji, is_public, is_default, sort_order, manga_count, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+		INSERT INTO custom_lists (id, user_id, name, description, is_public, sort_order, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := r.db.Exec(query,
 		list.ID, list.UserID, list.Name, list.Description,
-		list.IconEmoji, list.IsPublic, list.IsDefault, list.SortOrder,
+		list.IsPublic, list.SortOrder,
 		list.CreatedAt, list.UpdatedAt,
 	)
 	if err != nil {
@@ -49,14 +49,14 @@ func (r *Repository) CreateList(list *models.CustomList) error {
 // GetList retrieves a list by ID
 func (r *Repository) GetList(id string) (*models.CustomList, error) {
 	query := `
-		SELECT id, user_id, name, description, icon_emoji, is_public, is_default, sort_order, manga_count, created_at, updated_at
+		SELECT id, user_id, name, description, is_public, sort_order, created_at, updated_at
 		FROM custom_lists WHERE id = ?`
 
 	var list models.CustomList
-	var description, iconEmoji sql.NullString
+	var description sql.NullString
 	err := r.db.QueryRow(query, id).Scan(
-		&list.ID, &list.UserID, &list.Name, &description, &iconEmoji,
-		&list.IsPublic, &list.IsDefault, &list.SortOrder, &list.MangaCount,
+		&list.ID, &list.UserID, &list.Name, &description,
+		&list.IsPublic, &list.SortOrder,
 		&list.CreatedAt, &list.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -69,9 +69,6 @@ func (r *Repository) GetList(id string) (*models.CustomList, error) {
 	if description.Valid {
 		list.Description = description.String
 	}
-	if iconEmoji.Valid {
-		list.IconEmoji = iconEmoji.String
-	}
 
 	return &list, nil
 }
@@ -79,10 +76,10 @@ func (r *Repository) GetList(id string) (*models.CustomList, error) {
 // GetUserLists retrieves all lists for a user
 func (r *Repository) GetUserLists(userID string) ([]models.CustomList, error) {
 	query := `
-		SELECT id, user_id, name, description, icon_emoji, is_public, is_default, sort_order, manga_count, created_at, updated_at
+		SELECT id, user_id, name, description, is_public, sort_order, created_at, updated_at
 		FROM custom_lists 
 		WHERE user_id = ?
-		ORDER BY is_default DESC, sort_order ASC, name ASC`
+		ORDER BY sort_order ASC, name ASC`
 
 	rows, err := r.db.Query(query, userID)
 	if err != nil {
@@ -93,10 +90,10 @@ func (r *Repository) GetUserLists(userID string) ([]models.CustomList, error) {
 	var lists []models.CustomList
 	for rows.Next() {
 		var list models.CustomList
-		var description, iconEmoji sql.NullString
+		var description sql.NullString
 		err := rows.Scan(
-			&list.ID, &list.UserID, &list.Name, &description, &iconEmoji,
-			&list.IsPublic, &list.IsDefault, &list.SortOrder, &list.MangaCount,
+			&list.ID, &list.UserID, &list.Name, &description,
+			&list.IsPublic, &list.SortOrder,
 			&list.CreatedAt, &list.UpdatedAt,
 		)
 		if err != nil {
@@ -104,9 +101,6 @@ func (r *Repository) GetUserLists(userID string) ([]models.CustomList, error) {
 		}
 		if description.Valid {
 			list.Description = description.String
-		}
-		if iconEmoji.Valid {
-			list.IconEmoji = iconEmoji.String
 		}
 		lists = append(lists, list)
 	}
@@ -120,11 +114,11 @@ func (r *Repository) UpdateList(list *models.CustomList) error {
 
 	query := `
 		UPDATE custom_lists 
-		SET name = ?, description = ?, icon_emoji = ?, is_public = ?, sort_order = ?, updated_at = ?
-		WHERE id = ? AND user_id = ? AND is_default = 0`
+		SET name = ?, description = ?, is_public = ?, sort_order = ?, updated_at = ?
+		WHERE id = ? AND user_id = ?`
 
 	result, err := r.db.Exec(query,
-		list.Name, list.Description, list.IconEmoji, list.IsPublic, list.SortOrder,
+		list.Name, list.Description, list.IsPublic, list.SortOrder,
 		list.UpdatedAt, list.ID, list.UserID,
 	)
 	if err != nil {
@@ -133,24 +127,24 @@ func (r *Repository) UpdateList(list *models.CustomList) error {
 
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
-		return fmt.Errorf("list not found or is a default list")
+		return fmt.Errorf("list not found")
 	}
 
 	return nil
 }
 
-// DeleteList deletes a custom list (not default lists)
+	// DeleteList deletes a custom list
 func (r *Repository) DeleteList(id, userID string) error {
 	result, err := r.db.Exec(`
 		DELETE FROM custom_lists 
-		WHERE id = ? AND user_id = ? AND is_default = 0`, id, userID)
+		WHERE id = ? AND user_id = ?`, id, userID)
 	if err != nil {
 		return fmt.Errorf("failed to delete list: %w", err)
 	}
 
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
-		return fmt.Errorf("list not found or is a default list")
+		return fmt.Errorf("list not found")
 	}
 
 	return nil
@@ -184,12 +178,7 @@ func (r *Repository) AddMangaToList(listID, mangaID, userID, notes string) error
 		return fmt.Errorf("failed to add manga: %w", err)
 	}
 
-	// Update manga count
-	_, err = r.db.Exec(`
-		UPDATE custom_lists SET manga_count = (SELECT COUNT(*) FROM custom_list_items WHERE list_id = ?), updated_at = ?
-		WHERE id = ?`, listID, now, listID)
-
-	return err
+	return nil
 }
 
 // RemoveMangaFromList removes a manga from a list
@@ -209,13 +198,7 @@ func (r *Repository) RemoveMangaFromList(listID, mangaID, userID string) error {
 		return fmt.Errorf("failed to remove manga: %w", err)
 	}
 
-	// Update manga count
-	now := time.Now()
-	_, err = r.db.Exec(`
-		UPDATE custom_lists SET manga_count = (SELECT COUNT(*) FROM custom_list_items WHERE list_id = ?), updated_at = ?
-		WHERE id = ?`, listID, now, listID)
-
-	return err
+	return nil
 }
 
 // GetListItems retrieves all manga in a list with details
@@ -224,7 +207,7 @@ func (r *Repository) GetListItems(listID string) ([]models.CustomListWithManga, 
 		SELECT 
 			cli.id, cli.list_id, cli.manga_id, cli.sort_order, cli.notes, cli.added_at, cli.created_at,
 			m.id, m.title, m.author, m.artist, m.description, m.cover_url, m.status, m.type,
-			m.genres, m.total_chapters, m.rating, m.year, m.created_at, m.updated_at
+			m.total_chapters, m.average_rating, m.rating_count, m.year, m.created_at, m.updated_at
 		FROM custom_list_items cli
 		JOIN manga m ON cli.manga_id = m.id
 		WHERE cli.list_id = ?
@@ -240,13 +223,12 @@ func (r *Repository) GetListItems(listID string) ([]models.CustomListWithManga, 
 	for rows.Next() {
 		var item models.CustomListWithManga
 		var notes sql.NullString
-		var genres sql.NullString
 
 		err := rows.Scan(
-			&item.ID, &item.ListID, &item.MangaID, &item.SortOrder, &notes, &item.AddedAt, &item.CreatedAt,
+			&item.ID, &item.ListID, &item.MangaID, &item.SortOrder, &notes, &item.AddedAt,
 			&item.Manga.ID, &item.Manga.Title, &item.Manga.Author, &item.Manga.Artist,
 			&item.Manga.Description, &item.Manga.CoverURL, &item.Manga.Status, &item.Manga.Type,
-			&genres, &item.Manga.TotalChapters, &item.Manga.Rating, &item.Manga.Year,
+			&item.Manga.TotalChapters, &item.Manga.AverageRating, &item.Manga.RatingCount, &item.Manga.Year,
 			&item.Manga.CreatedAt, &item.Manga.UpdatedAt,
 		)
 		if err != nil {
@@ -256,9 +238,8 @@ func (r *Repository) GetListItems(listID string) ([]models.CustomListWithManga, 
 		if notes.Valid {
 			item.Notes = notes.String
 		}
-		if genres.Valid {
-			item.Manga.GenresJSON = genres.String
-		}
+		// Genres are loaded separately via JOIN in service layer
+		item.Manga.Genres = []models.Genre{}
 
 		items = append(items, item)
 	}
@@ -328,14 +309,14 @@ func (r *Repository) EnsureDefaultLists(userID string) error {
 		{"Top 10", "🏆", 2},
 	}
 
-	for _, dl := range defaultLists {
+	for i, dl := range defaultLists {
 		list := &models.CustomList{
-			UserID:    userID,
-			Name:      dl.Name,
-			IconEmoji: dl.Emoji,
-			IsDefault: true,
-			IsPublic:  false,
-			SortOrder: dl.SortOrder,
+			ID:          uuid.New().String(),
+			UserID:      userID,
+			Name:        dl.Name,
+			Description: "",
+			IsPublic:    false,
+			SortOrder:   i,
 		}
 		if err := r.CreateList(list); err != nil {
 			return err

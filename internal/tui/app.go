@@ -123,8 +123,6 @@ type Model struct {
 	browseModel    views.BrowseModel
 	detailModel    views.DetailModel
 	activityModel  views.ActivityModel
-	statsModel     views.StatsModel
-	settingsModel  views.SettingsModel
 	authModel      views.AuthModel
 	helpModel      views.HelpModel
 
@@ -133,6 +131,12 @@ type Model struct {
 
 	// Chat view
 	chatModel views.ChatModel
+
+	// Rating modal and comments view
+	ratingModal  views.RatingModal
+	commentsView views.CommentsView
+	showRating   bool
+	showComments bool
 
 	// WebSocket client for real-time chat
 	wsClient *network.WSClient
@@ -181,8 +185,6 @@ func New() Model {
 		libraryModel:   views.NewLibrary(),
 		browseModel:    views.NewBrowse(),
 		activityModel:  views.NewActivity(),
-		statsModel:     views.NewStats(),
-		settingsModel:  views.NewSettings(),
 		authModel:      views.NewAuth(),
 		helpModel:      views.NewHelp(),
 		paletteModel:   views.NewPalette(),
@@ -242,19 +244,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.browseModel.SetHeight(msg.Height - 6)
 		m.activityModel.SetWidth(msg.Width - 4)
 		m.activityModel.SetHeight(msg.Height - 6)
-		m.statsModel.SetWidth(msg.Width - 4)
-		m.statsModel.SetHeight(msg.Height - 6)
-		m.settingsModel.SetWidth(msg.Width - 4)
-		m.settingsModel.SetHeight(msg.Height - 6)
 		m.authModel.SetWidth(msg.Width - 4)
 		m.authModel.SetHeight(msg.Height - 6)
 		m.helpModel.SetWidth(msg.Width - 4)
 		m.helpModel.SetHeight(msg.Height - 6)
 		m.paletteModel.SetWidth(msg.Width)
 		m.paletteModel.SetHeight(msg.Height)
+		// Update modal and overlay dimensions
+		if m.showRating {
+			m.ratingModal, _ = m.ratingModal.Update(msg)
+		}
+		if m.showComments {
+			m.commentsView, _ = m.commentsView.Update(msg)
+		}
 		return m, nil
 
 	case tea.KeyMsg:
+		// Check if rating modal is open - handle it first
+		if m.showRating {
+			var cmd tea.Cmd
+			m.ratingModal, cmd = m.ratingModal.Update(msg)
+			return m, cmd
+		}
+
+		// Check if comments view is open - handle it first
+		if m.showComments {
+			var cmd tea.Cmd
+			m.commentsView, cmd = m.commentsView.Update(msg)
+			return m, cmd
+		}
+
 		// Check if palette is open - if so, handle it first
 		if m.paletteModel.IsVisible() {
 			var cmd tea.Cmd
@@ -283,6 +302,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "esc":
+			// Check if rating modal or comments view is open
+			if m.showRating {
+				m.showRating = false
+				return m, nil
+			}
+			if m.showComments {
+				m.showComments = false
+				return m, nil
+			}
 			// Always allow ESC to go back
 			if m.currentView != ViewDashboard {
 				m.currentView = m.previousView
@@ -348,27 +376,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.previousView = m.currentView
 				m.currentView = ViewActivity
 				return m, m.activityModel.Init()
-			}
-			return m, nil
-
-		case key.Matches(msg, m.keys.Stats):
-			if !m.authenticated {
-				m.previousView = m.currentView
-				m.currentView = ViewAuth
-				return m, m.authModel.Init()
-			}
-			if m.currentView != ViewStats {
-				m.previousView = m.currentView
-				m.currentView = ViewStats
-				return m, m.statsModel.Init()
-			}
-			return m, nil
-
-		case key.Matches(msg, m.keys.Settings):
-			if m.currentView != ViewSettings {
-				m.previousView = m.currentView
-				m.currentView = ViewSettings
-				return m, m.settingsModel.Init()
 			}
 			return m, nil
 
@@ -450,6 +457,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// =====================================
 	// CHAT & WEBSOCKET MESSAGES
 	// =====================================
+
+	case views.ShowRatingMsg:
+		// Show rating modal
+		if !m.authenticated {
+			m.toast.Show("Please login to rate manga", 3*time.Second)
+			return m, nil
+		}
+		m.ratingModal = views.NewRatingModal(msg.MangaID, msg.MangaTitle)
+		m.showRating = true
+		return m, m.ratingModal.Init()
+
+	case views.ShowCommentsMsg:
+		// Show comments view
+		m.commentsView = views.NewCommentsView(msg.MangaID, msg.MangaTitle)
+		m.showComments = true
+		return m, m.commentsView.Init()
+
+	case views.RatingSubmittedMsg:
+		// Rating was submitted successfully
+		m.showRating = false
+		m.toast.Show("Rating submitted successfully!", 3*time.Second)
+		// Reload detail view to show updated rating
+		return m, m.detailModel.Init()
+
+	case views.RatingErrorMsg:
+		// Rating submission failed
+		m.toast.Show(fmt.Sprintf("Failed to submit rating: %v", msg.Error), 5*time.Second)
+		return m, nil
 
 	case network.JoinRoomMsg:
 		// User requested to join a chat room
@@ -624,10 +659,6 @@ func (m Model) updateCurrentView(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detailModel, cmd = m.detailModel.Update(msg)
 	case ViewActivity:
 		m.activityModel, cmd = m.activityModel.Update(msg)
-	case ViewStats:
-		m.statsModel, cmd = m.statsModel.Update(msg)
-	case ViewSettings:
-		m.settingsModel, cmd = m.settingsModel.Update(msg)
 	case ViewAuth:
 		m.authModel, cmd = m.authModel.Update(msg)
 		// Check for successful login
@@ -684,19 +715,6 @@ func (m Model) handleCommand(commandID string) (tea.Model, tea.Cmd) {
 		m.previousView = m.currentView
 		m.currentView = ViewActivity
 		return m, m.activityModel.Init()
-	case "goto_stats":
-		if !m.authenticated {
-			m.previousView = m.currentView
-			m.currentView = ViewAuth
-			return m, m.authModel.Init()
-		}
-		m.previousView = m.currentView
-		m.currentView = ViewStats
-		return m, m.statsModel.Init()
-	case "goto_settings":
-		m.previousView = m.currentView
-		m.currentView = ViewSettings
-		return m, m.settingsModel.Init()
 	case "login":
 		if m.authenticated {
 			m.client.ClearToken()
@@ -738,8 +756,6 @@ func (m Model) handleCommand(commandID string) (tea.Model, tea.Cmd) {
 			return m, m.dashboardModel.Init()
 		case ViewLibrary:
 			return m, m.libraryModel.Init()
-		case ViewStats:
-			return m, m.statsModel.Init()
 		}
 	case "quit":
 		return m, tea.Quit
@@ -780,6 +796,27 @@ func (m Model) View() string {
 		footer,
 	)
 
+	// Overlay rating modal if visible
+	if m.showRating {
+		ratingOverlay := m.ratingModal.View()
+		if ratingOverlay != "" {
+			return lipgloss.Place(
+				m.width,
+				m.height,
+				lipgloss.Center,
+				lipgloss.Center,
+				ratingOverlay,
+				lipgloss.WithWhitespaceChars(" "),
+				lipgloss.WithWhitespaceForeground(lipgloss.Color("#222222")),
+			)
+		}
+	}
+
+	// Overlay comments view if visible
+	if m.showComments {
+		return m.commentsView.View()
+	}
+
 	// Overlay command palette if visible
 	if m.paletteModel.IsVisible() {
 		// Dim the background
@@ -819,10 +856,6 @@ func (m Model) renderCurrentView() string {
 		content = m.browseModel.View()
 	case ViewActivity:
 		content = m.activityModel.View()
-	case ViewStats:
-		content = m.statsModel.View()
-	case ViewSettings:
-		content = m.settingsModel.View()
 	case ViewAuth:
 		content = m.authModel.View()
 	case ViewHelp:

@@ -8,6 +8,7 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 )
 
@@ -18,11 +19,10 @@ type ChatMessage struct {
 	UserID      string       `json:"user_id" db:"user_id"`
 	Username    string       `json:"username" db:"-"` // Joined from users table
 	Content     string       `json:"content" db:"content"`
-	MessageType string       `json:"message_type" db:"message_type"` // text, image, system, manga_share
-	ReplyToID   string       `json:"reply_to_id,omitempty" db:"reply_to_id"`
+	ReplyToID   *string      `json:"reply_to_id,omitempty" db:"reply_to_id"`
 	ReplyTo     *ChatMessage `json:"reply_to,omitempty" db:"-"` // Nested reply
-	Edited      bool         `json:"edited" db:"edited"`
-	Deleted     bool         `json:"deleted" db:"deleted"`
+	IsEdited    bool         `json:"is_edited" db:"is_edited"`
+	IsDeleted   bool         `json:"is_deleted" db:"is_deleted"`
 	CreatedAt   time.Time    `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time    `json:"updated_at" db:"updated_at"`
 }
@@ -31,11 +31,11 @@ type ChatMessage struct {
 type ChatRoom struct {
 	ID          string    `json:"id" db:"id"`
 	Name        string    `json:"name" db:"name"`
-	RoomType    string    `json:"room_type" db:"room_type"` // public, private, manga, direct
-	MangaID     string    `json:"manga_id,omitempty" db:"manga_id"`
+	RoomType    string    `json:"room_type" db:"room_type"` // general, manga
+	MangaID     *string   `json:"manga_id,omitempty" db:"manga_id"`
 	OwnerID     string    `json:"owner_id" db:"owner_id"`
 	Description string    `json:"description,omitempty" db:"description"`
-	MaxMembers  int       `json:"max_members" db:"max_members"`
+	IsActive    bool      `json:"is_active" db:"is_active"`
 	MemberCount int       `json:"member_count" db:"-"` // Computed
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
@@ -43,13 +43,12 @@ type ChatRoom struct {
 
 // ChatRoomMember represents membership in a chat room
 type ChatRoomMember struct {
-	ID                   string    `json:"id" db:"id"`
-	RoomID               string    `json:"room_id" db:"room_id"`
-	UserID               string    `json:"user_id" db:"user_id"`
-	Role                 string    `json:"role" db:"role"` // owner, admin, moderator, member
-	JoinedAt             time.Time `json:"joined_at" db:"joined_at"`
-	LastReadAt           time.Time `json:"last_read_at" db:"last_read_at"`
-	NotificationsEnabled bool      `json:"notifications_enabled" db:"notifications_enabled"`
+	ID         string    `json:"id" db:"id"`
+	RoomID     string    `json:"room_id" db:"room_id"`
+	UserID     string    `json:"user_id" db:"user_id"`
+	Role       string    `json:"role" db:"role"` // owner, moderator, member
+	JoinedAt   time.Time `json:"joined_at" db:"joined_at"`
+	LastReadAt time.Time `json:"last_read_at" db:"last_read_at"`
 }
 
 // TypingIndicator represents a user currently typing
@@ -72,17 +71,15 @@ type OnlineStatus struct {
 
 // ChatEvent represents a WebSocket event for chat
 type ChatEvent struct {
-	Type      string      `json:"type"` // message, typing, presence, room_update
-	Payload   interface{} `json:"payload"`
-	Timestamp time.Time   `json:"timestamp"`
+	Type      string          `json:"type"` // message, typing, presence, room_update
+	Payload   json.RawMessage `json:"payload"`
+	Timestamp time.Time       `json:"timestamp"`
 }
 
 // Room types
 const (
-	RoomTypePublic  = "public"
-	RoomTypePrivate = "private"
-	RoomTypeManga   = "manga"  // Discussion room for a specific manga
-	RoomTypeDirect  = "direct" // DM between two users
+	RoomTypeGeneral = "general"
+	RoomTypeManga   = "manga" // Discussion room for a specific manga
 )
 
 // Message types
@@ -97,7 +94,6 @@ const (
 const (
 	RoleMember    = "member"
 	RoleModerator = "moderator"
-	RoleAdmin     = "admin"
 	RoleOwner     = "owner"
 )
 

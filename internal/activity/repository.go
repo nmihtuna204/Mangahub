@@ -9,27 +9,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-)
 
-// Activity represents a user activity entry
-type Activity struct {
-	ID            string    `json:"id" db:"id"`
-	UserID        string    `json:"user_id" db:"user_id"`
-	Username      string    `json:"username" db:"username"`
-	ActivityType  string    `json:"activity_type" db:"activity_type"` // chapter_read, manga_rated, manga_completed, comment_added
-	MangaID       string    `json:"manga_id" db:"manga_id"`
-	MangaTitle    string    `json:"manga_title" db:"manga_title"`
-	ChapterNumber *int      `json:"chapter_number,omitempty" db:"chapter_number"`
-	Rating        *float64  `json:"rating,omitempty" db:"rating"`
-	CommentText   *string   `json:"comment_text,omitempty" db:"comment_text"`
-	CreatedAt     time.Time `json:"created_at" db:"created_at"`
-}
+	"mangahub/pkg/models"
+)
 
 // Repository defines activity data operations
 type Repository interface {
-	Create(ctx context.Context, activity *Activity) error
-	GetRecent(ctx context.Context, limit, offset int) ([]Activity, int, error)
-	GetByUser(ctx context.Context, userID string, limit, offset int) ([]Activity, int, error)
+	Create(ctx context.Context, activity *models.Activity) error
+	GetRecent(ctx context.Context, limit, offset int) ([]models.Activity, int, error)
+	GetByUser(ctx context.Context, userID string, limit, offset int) ([]models.Activity, int, error)
 }
 
 type repository struct {
@@ -42,7 +30,7 @@ func NewRepository(db *sql.DB) Repository {
 }
 
 // Create inserts a new activity entry
-func (r *repository) Create(ctx context.Context, activity *Activity) error {
+func (r *repository) Create(ctx context.Context, activity *models.Activity) error {
 	if activity.ID == "" {
 		activity.ID = uuid.New().String()
 	}
@@ -61,7 +49,7 @@ func (r *repository) Create(ctx context.Context, activity *Activity) error {
 }
 
 // GetRecent retrieves recent activities across all users
-func (r *repository) GetRecent(ctx context.Context, limit, offset int) ([]Activity, int, error) {
+func (r *repository) GetRecent(ctx context.Context, limit, offset int) ([]models.Activity, int, error) {
 	// Get total count
 	var total int
 	err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM activity_feed").Scan(&total)
@@ -81,9 +69,9 @@ func (r *repository) GetRecent(ctx context.Context, limit, offset int) ([]Activi
 	}
 	defer rows.Close()
 
-	var activities []Activity
+	var activities []models.Activity
 	for rows.Next() {
-		var a Activity
+		var a models.Activity
 		err := rows.Scan(&a.ID, &a.UserID, &a.Username, &a.ActivityType,
 			&a.MangaID, &a.MangaTitle, &a.ChapterNumber, &a.Rating,
 			&a.CommentText, &a.CreatedAt)
@@ -97,9 +85,9 @@ func (r *repository) GetRecent(ctx context.Context, limit, offset int) ([]Activi
 }
 
 // GetByUser retrieves activities for a specific user
-func (r *repository) GetByUser(ctx context.Context, userID string, limit, offset int) ([]Activity, int, error) {
+func (r *repository) GetByUser(ctx context.Context, userID string, limit, offset int) ([]models.Activity, int, error) {
 	var total int
-	err := r.db.QueryRowContext(ctx, 
+	err := r.db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM activity_feed WHERE user_id = ?", userID).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("count user activities: %w", err)
@@ -117,9 +105,9 @@ func (r *repository) GetByUser(ctx context.Context, userID string, limit, offset
 	}
 	defer rows.Close()
 
-	var activities []Activity
+	var activities []models.Activity
 	for rows.Next() {
-		var a Activity
+		var a models.Activity
 		err := rows.Scan(&a.ID, &a.UserID, &a.Username, &a.ActivityType,
 			&a.MangaID, &a.MangaTitle, &a.ChapterNumber, &a.Rating,
 			&a.CommentText, &a.CreatedAt)

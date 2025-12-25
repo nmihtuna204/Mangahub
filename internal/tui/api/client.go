@@ -319,10 +319,11 @@ func (c *Client) Logout(ctx context.Context) error {
 type MangaListResponse struct {
 	Success bool `json:"success"`
 	Data    struct {
-		Manga      []models.Manga `json:"manga"`
-		TotalCount int            `json:"total_count"`
-		Page       int            `json:"page"`
-		PageSize   int            `json:"page_size"`
+		Data    []models.Manga `json:"data"`
+		Total   int            `json:"total"`
+		Limit   int            `json:"limit"`
+		Offset  int            `json:"offset"`
+		HasMore bool           `json:"has_more"`
 	} `json:"data"`
 }
 
@@ -332,7 +333,7 @@ func (c *Client) SearchManga(ctx context.Context, query string, page, pageSize i
 	cacheKey := fmt.Sprintf("search:%s:%d:%d", query, page, pageSize)
 	if cached, found := c.cache.Get(cacheKey); found {
 		if result, ok := cached.(*MangaListResponse); ok {
-			return result.Data.Manga, result.Data.TotalCount, nil
+			return result.Data.Data, result.Data.Total, nil
 		}
 	}
 
@@ -357,7 +358,7 @@ func (c *Client) SearchManga(ctx context.Context, query string, page, pageSize i
 	// Cache the result
 	c.cache.Set(cacheKey, result, CacheDuration)
 
-	return result.Data.Manga, result.Data.TotalCount, nil
+	return result.Data.Data, result.Data.Total, nil
 }
 
 // GetManga retrieves a single manga by ID
@@ -388,18 +389,48 @@ func (c *Client) GetManga(ctx context.Context, mangaID string) (*models.Manga, e
 	return result.Data, nil
 }
 
+// SearchMangaByGenre searches for manga by genre
+func (c *Client) SearchMangaByGenre(ctx context.Context, genre string, page, pageSize int) ([]models.Manga, int, error) {
+	// Check cache first
+	cacheKey := fmt.Sprintf("genre:%s:%d:%d", genre, page, pageSize)
+	if cached, found := c.cache.Get(cacheKey); found {
+		if result, ok := cached.(*MangaListResponse); ok {
+			return result.Data.Data, result.Data.Total, nil
+		}
+	}
+
+	params := url.Values{}
+	params.Set("q", genre) // The API searches in genres JSON array
+	params.Set("page", fmt.Sprintf("%d", page))
+	params.Set("page_size", fmt.Sprintf("%d", pageSize))
+
+	endpoint := "/manga?" + params.Encode()
+	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	result, err := parseResponse[MangaListResponse](resp)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Cache the result
+	c.cache.Set(cacheKey, result, CacheDuration)
+	return result.Data.Data, result.Data.Total, nil
+}
+
 // =====================================
 // LIBRARY API
-// =====================================
+// ===================================== ==
 
 // LibraryEntry represents a manga in user's library
 type LibraryEntry struct {
 	MangaID        string       `json:"manga_id"`
 	Manga          models.Manga `json:"manga"`
-	Status         string       `json:"status"` // reading, planning, completed, on_hold, dropped
+	Status         string       `json:"status"` // reading, plan_to_read, completed, on_hold, dropped
 	CurrentChapter int          `json:"current_chapter"`
-	TotalChapters  int          `json:"total_chapters"`
-	Rating         float64      `json:"rating"`
+	IsFavorite     bool         `json:"is_favorite"`
 	LastReadAt     time.Time    `json:"last_read_at"`
 	AddedAt        time.Time    `json:"added_at"`
 }
@@ -435,8 +466,10 @@ func (c *Client) GetLibrary(ctx context.Context) ([]LibraryEntry, error) {
 
 // AddToLibrary adds a manga to user's library
 func (c *Client) AddToLibrary(ctx context.Context, mangaID string) error {
-	_, err := c.doRequest(ctx, "POST", "/users/library", map[string]string{
-		"manga_id": mangaID,
+	_, err := c.doRequest(ctx, "POST", "/users/library", map[string]interface{}{
+		"manga_id":        mangaID,
+		"status":          "plan_to_read",
+		"current_chapter": 0,
 	})
 	c.cache.Delete("library") // Invalidate cache
 	return err
@@ -449,12 +482,18 @@ func (c *Client) RemoveFromLibrary(ctx context.Context, mangaID string) error {
 	return err
 }
 
-// UpdateProgress updates reading progress
-func (c *Client) UpdateProgress(ctx context.Context, mangaID string, chapter int) error {
-	_, err := c.doRequest(ctx, "PUT", "/users/progress", map[string]interface{}{
-		"manga_id": mangaID,
-		"chapter":  chapter,
-	})
+// UpdateProgress updates reading progress with chapter, status, and favorite flag
+func (c *Client) UpdateProgress(ctx context.Context, mangaID string, chapter int, status string, isFavorite bool) error {
+	payload := map[string]interface{}{
+		"manga_id":        mangaID,
+		"current_chapter": chapter,
+	}
+	if status != "" {
+		payload["status"] = status
+	}
+	payload["is_favorite"] = isFavorite
+
+	_, err := c.doRequest(ctx, "PUT", "/users/progress", payload)
 	c.cache.Delete("library") // Invalidate cache
 	return err
 }
@@ -465,15 +504,15 @@ func (c *Client) UpdateProgress(ctx context.Context, mangaID string, chapter int
 
 // RatingSummaryResponse from ratings API
 type RatingSummaryResponse struct {
-	Success bool                        `json:"success"`
-	Data    *models.MangaRatingsSummary `json:"data"`
+	Success bool                  `json:"success"`
+	Data    *models.RatingSummary `json:"data"`
 }
 
 // GetRatings retrieves rating summary for a manga
-func (c *Client) GetRatings(ctx context.Context, mangaID string) (*models.MangaRatingsSummary, error) {
+func (c *Client) GetRatings(ctx context.Context, mangaID string) (*models.RatingSummary, error) {
 	cacheKey := "ratings:" + mangaID
 	if cached, found := c.cache.Get(cacheKey); found {
-		if result, ok := cached.(*models.MangaRatingsSummary); ok {
+		if result, ok := cached.(*models.RatingSummary); ok {
 			return result, nil
 		}
 	}
@@ -493,10 +532,10 @@ func (c *Client) GetRatings(ctx context.Context, mangaID string) (*models.MangaR
 }
 
 // SubmitRating submits/updates a rating
-func (c *Client) SubmitRating(ctx context.Context, mangaID string, rating float64, review string) error {
+func (c *Client) SubmitRating(ctx context.Context, mangaID string, rating int, review string) error {
 	_, err := c.doRequest(ctx, "POST", "/manga/"+mangaID+"/ratings", map[string]interface{}{
-		"overall_rating": rating,
-		"review_text":    review,
+		"rating":      rating, // 1-10 integer scale
+		"review_text": review,
 	})
 	c.cache.Delete("ratings:" + mangaID)
 	return err
@@ -623,6 +662,35 @@ func (c *Client) GetComments(ctx context.Context, mangaID string, page, pageSize
 	return result.Data, nil
 }
 
+// PostComment posts a new comment on a manga
+func (c *Client) PostComment(ctx context.Context, mangaID, content string, chapterNum *int, parentID *string) error {
+	payload := map[string]interface{}{
+		"manga_id": mangaID,
+		"content":  content,
+	}
+	if chapterNum != nil {
+		payload["chapter_number"] = *chapterNum
+	}
+	if parentID != nil {
+		payload["parent_id"] = *parentID
+	}
+
+	_, err := c.doRequest(ctx, "POST", "/manga/"+mangaID+"/comments", payload)
+	return err
+}
+
+// LikeComment likes a comment
+func (c *Client) LikeComment(ctx context.Context, commentID string) error {
+	_, err := c.doRequest(ctx, "POST", "/comments/"+commentID+"/like", nil)
+	return err
+}
+
+// UnlikeComment unlikes a comment
+func (c *Client) UnlikeComment(ctx context.Context, commentID string) error {
+	_, err := c.doRequest(ctx, "DELETE", "/comments/"+commentID+"/like", nil)
+	return err
+}
+
 // =====================================
 // HEALTH CHECK
 // =====================================
@@ -638,152 +706,87 @@ func (c *Client) HealthCheck(ctx context.Context) bool {
 }
 
 // =====================================
-// STATISTICS API
+// ACTIVITY FEED API
 // =====================================
 
-// GetStatistics retrieves user reading statistics
-func (c *Client) GetStatistics(ctx context.Context) (*models.ReadingStats, error) {
-	resp, err := c.doRequest(ctx, "GET", "/api/stats", nil)
-	if err != nil {
-		return nil, err
-	}
-
-	type StatsResponse struct {
-		Success bool                 `json:"success"`
-		Data    *models.ReadingStats `json:"data"`
-	}
-
-	result, err := parseResponse[StatsResponse](resp)
-	if err != nil {
-		return nil, err
-	}
-
-	return result.Data, nil
+// ActivityEntry represents an activity from the feed
+type ActivityEntry struct {
+	ID           string    `json:"id"`
+	UserID       string    `json:"user_id"`
+	Username     string    `json:"username"`
+	ActivityType string    `json:"activity_type"`
+	MangaID      string    `json:"manga_id"`
+	MangaTitle   string    `json:"manga_title"`
+	Rating       *float64  `json:"rating,omitempty"`
+	Chapter      *int      `json:"chapter_number,omitempty"`
+	CommentText  string    `json:"comment_text,omitempty"` // String, not pointer (empty if no comment)
+	CreatedAt    time.Time `json:"created_at"`
 }
 
-// GetStatsOverview retrieves statistics overview
-func (c *Client) GetStatsOverview(ctx context.Context) (*models.StatsOverview, error) {
-	resp, err := c.doRequest(ctx, "GET", "/api/stats/overview", nil)
-	if err != nil {
-		return nil, err
+// GetActivities retrieves recent activity feed
+func (c *Client) GetActivities(ctx context.Context, limit int) ([]ActivityEntry, error) {
+	cacheKey := fmt.Sprintf("activities:%d", limit)
+	if cached, found := c.cache.Get(cacheKey); found {
+		if result, ok := cached.([]ActivityEntry); ok {
+			return result, nil
+		}
 	}
 
-	type OverviewResponse struct {
-		Success bool                  `json:"success"`
-		Data    *models.StatsOverview `json:"data"`
-	}
-
-	result, err := parseResponse[OverviewResponse](resp)
-	if err != nil {
-		return nil, err
-	}
-
-	return result.Data, nil
-}
-
-// GetReadingHeatmap retrieves reading heatmap data
-func (c *Client) GetReadingHeatmap(ctx context.Context, days int) ([]models.ReadingHeatmap, error) {
 	params := url.Values{}
-	params.Set("days", fmt.Sprintf("%d", days))
+	params.Set("limit", fmt.Sprintf("%d", limit))
 
-	resp, err := c.doRequest(ctx, "GET", "/api/stats/heatmap?"+params.Encode(), nil)
+	resp, err := c.doRequest(ctx, "GET", "/activities?"+params.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
 
-	type HeatmapResponse struct {
-		Success bool                    `json:"success"`
-		Data    []models.ReadingHeatmap `json:"data"`
-	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
 
-	result, err := parseResponse[HeatmapResponse](resp)
-	if err != nil {
+	// API returns {activities: [], total, limit, offset} NOT wrapped in data
+	var rawResp struct {
+		Activities []ActivityEntry `json:"activities"`
+		Total      int             `json:"total"`
+	}
+	if err := json.Unmarshal(body, &rawResp); err != nil {
 		return nil, err
 	}
 
-	return result.Data, nil
+	c.cache.Set(cacheKey, rawResp.Activities, DashboardCacheTTL)
+	return rawResp.Activities, nil
 }
 
 // =====================================
-// PREFERENCES API
+// LIBRARY STATUS UPDATES
 // =====================================
 
-// GetPreferences retrieves user preferences
-func (c *Client) GetPreferences(ctx context.Context) (*models.UserPreferences, error) {
-	resp, err := c.doRequest(ctx, "GET", "/api/preferences", nil)
-	if err != nil {
-		return nil, err
-	}
-
-	type PreferencesResponse struct {
-		Success bool                    `json:"success"`
-		Data    *models.UserPreferences `json:"data"`
-	}
-
-	result, err := parseResponse[PreferencesResponse](resp)
-	if err != nil {
-		return nil, err
-	}
-
-	return result.Data, nil
+// UpdateLibraryStatus updates the reading status of a manga in library
+func (c *Client) UpdateLibraryStatus(ctx context.Context, mangaID string, status string) error {
+	_, err := c.doRequest(ctx, "PUT", "/users/progress", map[string]interface{}{
+		"manga_id": mangaID,
+		"status":   status,
+	})
+	c.cache.Delete("library") // Invalidate cache
+	return err
 }
 
-// UpdatePreferences updates user preferences
-func (c *Client) UpdatePreferences(ctx context.Context, prefs *models.UpdatePreferencesRequest) (*models.UserPreferences, error) {
-	resp, err := c.doRequest(ctx, "PUT", "/api/preferences", prefs)
-	if err != nil {
-		return nil, err
-	}
-
-	type PreferencesResponse struct {
-		Success bool                    `json:"success"`
-		Data    *models.UserPreferences `json:"data"`
-	}
-
-	result, err := parseResponse[PreferencesResponse](resp)
-	if err != nil {
-		return nil, err
-	}
-
-	return result.Data, nil
+// UpdateLibraryProgress updates both status and chapter progress
+func (c *Client) UpdateLibraryProgress(ctx context.Context, mangaID string, status string, chapter int) error {
+	_, err := c.doRequest(ctx, "PUT", "/users/progress", map[string]interface{}{
+		"manga_id":        mangaID,
+		"status":          status,
+		"current_chapter": chapter,
+	})
+	c.cache.Delete("library") // Invalidate cache
+	return err
 }
 
-// ResetPreferences resets preferences to defaults
-func (c *Client) ResetPreferences(ctx context.Context) (*models.UserPreferences, error) {
-	resp, err := c.doRequest(ctx, "POST", "/api/preferences/reset", nil)
-	if err != nil {
-		return nil, err
-	}
-
-	type PreferencesResponse struct {
-		Success bool                    `json:"success"`
-		Data    *models.UserPreferences `json:"data"`
-	}
-
-	result, err := parseResponse[PreferencesResponse](resp)
-	if err != nil {
-		return nil, err
-	}
-
-	return result.Data, nil
-}
-
-// ExportUserData exports user data
-func (c *Client) ExportUserData(ctx context.Context) (*models.ExportDataResponse, error) {
-	resp, err := c.doRequest(ctx, "POST", "/api/preferences/export", nil)
-	if err != nil {
-		return nil, err
-	}
-
-	type ExportResponse struct {
-		Success bool                       `json:"success"`
-		Data    *models.ExportDataResponse `json:"data"`
-	}
-
-	result, err := parseResponse[ExportResponse](resp)
-	if err != nil {
-		return nil, err
-	}
-
-	return result.Data, nil
+// ToggleFavorite toggles favorite status for a manga
+func (c *Client) ToggleFavorite(ctx context.Context, mangaID string, isFavorite bool) error {
+	_, err := c.doRequest(ctx, "PUT", "/users/progress", map[string]interface{}{
+		"manga_id":    mangaID,
+		"is_favorite": isFavorite,
+	})
+	c.cache.Delete("library") // Invalidate cache
+	return err
 }

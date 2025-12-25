@@ -16,6 +16,13 @@ message GetMangaRequest {
   string manga_id = 1;
 }
 
+// Genre message
+message Genre {
+  string id = 1;
+  string name = 2;
+  string slug = 3;
+}
+
 // Manga data response
 message MangaResponse {
   string id = 1;
@@ -26,10 +33,11 @@ message MangaResponse {
   string cover_url = 6;
   string status = 7;
   string type = 8;
-  repeated string genres = 9;
+  repeated Genre genres = 9;
   int32 total_chapters = 10;
-  double rating = 11;
-  int32 year = 12;
+  double average_rating = 11;
+  int32 rating_count = 12;
+  int32 year = 13;
 }
 
 // Search request with filters
@@ -55,7 +63,6 @@ message ProgressRequest {
   string manga_id = 2;
   int32 current_chapter = 3;
   string status = 4;
-  int32 rating = 5;
 }
 
 // Progress update response
@@ -65,6 +72,5 @@ message ProgressResponse {
   string manga_id = 3;
   int32 current_chapter = 4;
   string status = 5;
-  int32 rating = 6;
-  int64 timestamp = 7;
+  int64 timestamp = 6;
 }

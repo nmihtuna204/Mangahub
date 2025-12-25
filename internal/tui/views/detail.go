@@ -48,7 +48,7 @@ type DetailModel struct {
 	// Data
 	mangaID string
 	manga   *models.Manga
-	ratings *models.MangaRatingsSummary
+	ratings *models.RatingSummary
 	library *api.LibraryEntry
 
 	// Loading
@@ -76,13 +76,25 @@ type DetailModel struct {
 // DetailDataLoadedMsg signals manga detail loaded
 type DetailDataLoadedMsg struct {
 	Manga   *models.Manga
-	Ratings *models.MangaRatingsSummary
+	Ratings *models.RatingSummary
 	Library *api.LibraryEntry
 }
 
 // DetailErrorMsg signals an error
 type DetailErrorMsg struct {
 	Error error
+}
+
+// ShowCommentsMsg signals to show comments view
+type ShowCommentsMsg struct {
+	MangaID    string
+	MangaTitle string
+}
+
+// ShowRatingMsg signals to show rating modal
+type ShowRatingMsg struct {
+	MangaID    string
+	MangaTitle string
 }
 
 // =====================================
@@ -171,8 +183,15 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 			m.selectedAction = (m.selectedAction + 1) % len(m.actions)
 
 		case "r":
-			// Read next
-			// TODO: Implement read next action
+			// Read next chapter
+			if m.manga != nil && m.library != nil {
+				// Just increment chapter count for now
+				nextChapter := m.library.CurrentChapter + 1
+				if nextChapter <= m.manga.TotalChapters {
+					// Update progress through API
+					return m, m.updateReadingProgress(nextChapter)
+				}
+			}
 		case "c":
 			// Join Chat for this manga
 			if m.manga != nil {
@@ -189,14 +208,73 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 			}
 		case "C":
 			// Comments (capital C)
-			// TODO: Navigate to comments view
+			// TODO: Open comments view - will be handled by parent app
+			return m, func() tea.Msg {
+				return ShowCommentsMsg{
+					MangaID:    m.mangaID,
+					MangaTitle: m.manga.Title,
+				}
+			}
 		case "R":
-			// Rate
-			// TODO: Open rating modal
+			// Rate (capital R)
+			// TODO: Open rating modal - will be handled by parent app
+			return m, func() tea.Msg {
+				return ShowRatingMsg{
+					MangaID:    m.mangaID,
+					MangaTitle: m.manga.Title,
+				}
+			}
 		case "a":
 			// Add to library
 			if m.manga != nil && m.library == nil {
 				return m, m.addToLibrary
+			}
+		case "enter":
+			// Execute the currently selected action
+			if len(m.actions) == 0 {
+				break
+			}
+			action := m.actions[m.selectedAction]
+			switch action {
+			case "Add to Library":
+				if m.manga != nil && m.library == nil {
+					return m, m.addToLibrary
+				}
+			case "Read Next":
+				if m.manga != nil && m.library != nil {
+					nextChapter := m.library.CurrentChapter + 1
+					if nextChapter <= m.manga.TotalChapters {
+						return m, m.updateReadingProgress(nextChapter)
+					}
+				} else if m.manga != nil && m.library == nil {
+					// If not in library, add first
+					return m, m.addToLibrary
+				}
+			case "💬 Chat":
+				if m.manga != nil {
+					mangaName := m.manga.Title
+					roomID := "manga_" + m.mangaID
+					return m, func() tea.Msg {
+						return network.JoinRoomMsg{
+							RoomID:    roomID,
+							RoomName:  mangaName + " Discussion",
+							MangaID:   m.mangaID,
+							MangaName: mangaName,
+						}
+					}
+				}
+			case "Comments":
+				return m, func() tea.Msg {
+					return ShowCommentsMsg{MangaID: m.mangaID, MangaTitle: m.manga.Title}
+				}
+			case "Rate":
+				return m, func() tea.Msg {
+					return ShowRatingMsg{MangaID: m.mangaID, MangaTitle: m.manga.Title}
+				}
+			case "Update Progress":
+				if m.library != nil {
+					return m, m.updateReadingProgress(m.library.CurrentChapter + 1)
+				}
 			}
 		}
 
@@ -210,6 +288,10 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 			m.actions = []string{"Read Next", "💬 Chat", "Update Progress", "Comments", "Rate"}
 		} else {
 			m.actions = []string{"Add to Library", "💬 Chat", "Comments", "Rate"}
+		}
+		// Ensure selectedAction is within bounds after actions change
+		if m.selectedAction >= len(m.actions) {
+			m.selectedAction = 0
 		}
 
 	case DetailErrorMsg:
@@ -234,6 +316,19 @@ func (m DetailModel) addToLibrary() tea.Msg {
 	}
 	// Reload to update library status
 	return m.loadMangaDetail()
+}
+
+// updateReadingProgress updates the reading progress
+func (m DetailModel) updateReadingProgress(chapter int) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		err := m.client.UpdateLibraryProgress(ctx, m.mangaID, "reading", chapter)
+		if err != nil {
+			return DetailErrorMsg{Error: err}
+		}
+		// Reload to update library status
+		return m.loadMangaDetail()
+	}
 }
 
 // View renders the detail view
@@ -286,6 +381,12 @@ func (m DetailModel) renderCard() string {
 		sections = append(sections, ratingSummary)
 	}
 
+	// ===== CHAPTERS =====
+	if m.manga != nil && m.manga.TotalChapters > 0 {
+		chapters := m.renderChapters()
+		sections = append(sections, chapters)
+	}
+
 	// ===== ACTIONS =====
 	actions := m.renderActions()
 	sections = append(sections, actions)
@@ -300,8 +401,8 @@ func (m DetailModel) renderHeader() string {
 
 	// Rating badge
 	var ratingBadge string
-	if m.ratings != nil && m.ratings.Aggregate.TotalRatings > 0 {
-		ratingBadge = styles.RenderRatingWithNumber(m.ratings.Aggregate.AverageRating)
+	if m.ratings != nil && m.ratings.RatingCount > 0 {
+		ratingBadge = styles.RenderRatingWithNumber(m.ratings.AverageRating)
 	} else {
 		ratingBadge = m.theme.DimText.Render("No ratings yet")
 	}
@@ -329,7 +430,11 @@ func (m DetailModel) renderMetadata() string {
 
 	// Genres (if available)
 	if len(m.manga.Genres) > 0 {
-		genres := strings.Join(m.manga.Genres[:min(3, len(m.manga.Genres))], "/")
+		genreNames := make([]string, 0, min(3, len(m.manga.Genres)))
+		for i := 0; i < min(3, len(m.manga.Genres)); i++ {
+			genreNames = append(genreNames, m.manga.Genres[i].Name)
+		}
+		genres := strings.Join(genreNames, "/")
 		parts = append(parts, genres)
 	}
 
@@ -381,7 +486,7 @@ func (m DetailModel) renderASCIIArt() string {
 │    ║      ║      │
 │    ╚══════╝      │
 │                  │
-│   📖 Vol. 1     │
+│     Vol. 1       │
 │                  │
 └──────────────────┘`
 }
@@ -417,7 +522,7 @@ func (m DetailModel) renderProgress() string {
 	header := m.theme.PanelHeader.Render("YOUR PROGRESS")
 
 	current := m.library.CurrentChapter
-	total := m.library.TotalChapters
+	total := m.manga.TotalChapters // Get from manga, not library
 
 	var progressPct float64
 	var progressText string
@@ -438,11 +543,57 @@ func (m DetailModel) renderProgress() string {
 func (m DetailModel) renderRatingSummary() string {
 	header := m.theme.PanelHeader.Render("COMMUNITY RATINGS")
 
-	agg := m.ratings.Aggregate
-	avgRating := styles.RenderRating(agg.AverageRating, true)
-	countText := m.theme.DimText.Render(fmt.Sprintf("(%d ratings)", agg.TotalRatings))
+	avgRating := styles.RenderRating(m.ratings.AverageRating, true)
+	countText := m.theme.DimText.Render(fmt.Sprintf("(%d ratings)", m.ratings.RatingCount))
 
 	return header + "\n" + avgRating + " " + countText + "\n"
+}
+
+// renderChapters renders the chapter list
+func (m DetailModel) renderChapters() string {
+	header := m.theme.PanelHeader.Render("CHAPTERS")
+
+	totalChapters := m.manga.TotalChapters
+	currentChapter := 0
+	if m.library != nil {
+		currentChapter = m.library.CurrentChapter
+	}
+
+	// Show up to 5 chapters around current chapter
+	startChapter := max(1, currentChapter-2)
+	endChapter := min(totalChapters, startChapter+4)
+	if endChapter == totalChapters && endChapter-startChapter < 4 {
+		startChapter = max(1, endChapter-4)
+	}
+
+	var chapters []string
+	for i := startChapter; i <= endChapter; i++ {
+		icon := "📖"
+		label := fmt.Sprintf("Chapter %d", i)
+
+		// Style based on read status
+		var style lipgloss.Style
+		if i < currentChapter {
+			// Already read
+			icon = "✓"
+			style = m.theme.DimText
+		} else if i == currentChapter {
+			// Currently reading
+			icon = "▶"
+			style = m.theme.Primary.Bold(true)
+		} else {
+			// Not read yet
+			style = m.theme.Description
+		}
+
+		chapters = append(chapters, "  "+icon+" "+style.Render(label))
+	}
+
+	if totalChapters > endChapter {
+		chapters = append(chapters, m.theme.DimText.Render(fmt.Sprintf("  ... and %d more chapters", totalChapters-endChapter)))
+	}
+
+	return header + "\n" + strings.Join(chapters, "\n") + "\n"
 }
 
 // renderActions renders the action buttons

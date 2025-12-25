@@ -6,21 +6,17 @@ import (
 
 // ReadingProgress represents a user's reading progress for a manga
 type ReadingProgress struct {
-	ID                string    `json:"id" db:"id"`
-	UserID            string    `json:"user_id" db:"user_id"`
-	MangaID           string    `json:"manga_id" db:"manga_id"`
-	CurrentChapter    int       `json:"current_chapter" db:"current_chapter"`
-	TotalChapters     int       `json:"total_chapters" db:"total_chapters"`
-	Status            string    `json:"status" db:"status"` // reading, completed, plan_to_read, dropped
-	Rating            *int      `json:"rating,omitempty" db:"rating"`
-	Notes             string    `json:"notes" db:"notes"`
-	IsFavorite        bool      `json:"is_favorite" db:"is_favorite"`
-	StartedAt         *time.Time `json:"started_at,omitempty" db:"started_at"`
-	CompletedAt       *time.Time `json:"completed_at,omitempty" db:"completed_at"`
-	LastReadAt        time.Time `json:"last_read_at" db:"last_read_at"`
-	CreatedAt         time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at" db:"updated_at"`
-	SyncVersion       int       `json:"sync_version" db:"sync_version"` // for conflict resolution
+	ID             string     `json:"id" db:"id"`
+	UserID         string     `json:"user_id" db:"user_id"`
+	MangaID        string     `json:"manga_id" db:"manga_id"`
+	CurrentChapter int        `json:"current_chapter" db:"current_chapter"`
+	Status         string     `json:"status" db:"status"` // plan_to_read, reading, completed, on_hold, dropped
+	IsFavorite     bool       `json:"is_favorite" db:"is_favorite"`
+	StartedAt      *time.Time `json:"started_at,omitempty" db:"started_at"`
+	CompletedAt    *time.Time `json:"completed_at,omitempty" db:"completed_at"`
+	LastReadAt     time.Time  `json:"last_read_at" db:"last_read_at"`
+	CreatedAt      time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at" db:"updated_at"`
 }
 
 // ProgressWithManga combines progress with manga details
@@ -33,9 +29,7 @@ type ProgressWithManga struct {
 type UpdateProgressRequest struct {
 	MangaID        string `json:"manga_id" validate:"required"`
 	CurrentChapter int    `json:"current_chapter" validate:"min=0"`
-	Status         string `json:"status" validate:"omitempty,oneof=reading completed plan_to_read dropped"`
-	Rating         *int   `json:"rating,omitempty" validate:"omitempty,min=1,max=10"`
-	Notes          string `json:"notes,omitempty"`
+	Status         string `json:"status" validate:"omitempty,oneof=plan_to_read reading completed on_hold dropped"`
 	IsFavorite     bool   `json:"is_favorite"`
 }
 

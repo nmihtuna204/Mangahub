@@ -18,17 +18,14 @@ type Service interface {
 	// Rate creates or updates a user's rating for a manga
 	Rate(ctx context.Context, userID, mangaID string, req models.CreateRatingRequest) (*models.MangaRating, error)
 
-	// GetRatingSummary returns aggregate stats + recent ratings for a manga
-	GetRatingSummary(ctx context.Context, mangaID string, currentUserID string) (*models.MangaRatingsSummary, error)
+	// GetMangaRatings returns aggregate stats + recent ratings for a manga
+	GetMangaRatings(ctx context.Context, mangaID string, limit, offset int) (*models.MangaRatingsResponse, error)
 
 	// GetUserRating returns a user's rating for a manga
 	GetUserRating(ctx context.Context, userID, mangaID string) (*models.MangaRating, error)
 
 	// DeleteRating removes a user's rating
 	DeleteRating(ctx context.Context, userID, mangaID string) error
-
-	// GetTopRated returns top rated manga for leaderboards
-	GetTopRated(ctx context.Context, limit, offset int) ([]models.RatingAggregate, error)
 }
 
 type service struct {
@@ -47,11 +44,7 @@ func (s *service) Rate(ctx context.Context, userID, mangaID string, req models.C
 		return nil, models.NewAppError(models.ErrCodeValidation, "invalid rating data", 400, err)
 	}
 
-	// Additional validation: overall rating must be between 1-10
-	if req.OverallRating < 1 || req.OverallRating > 10 {
-		return nil, models.NewAppError(models.ErrCodeValidation, "overall rating must be between 1 and 10", 400, nil)
-	}
-
+	// Validation is handled by struct tags in CreateRatingRequest (min=1, max=10)
 	rating, err := s.repo.CreateOrUpdate(ctx, userID, mangaID, req)
 	if err != nil {
 		return nil, models.NewAppError(models.ErrCodeInternal, "failed to save rating", 500, err)
@@ -60,42 +53,42 @@ func (s *service) Rate(ctx context.Context, userID, mangaID string, req models.C
 	return rating, nil
 }
 
-// GetRatingSummary builds a complete summary of ratings for a manga
-// Includes: aggregate stats, recent reviews, and current user's rating if logged in
-func (s *service) GetRatingSummary(ctx context.Context, mangaID string, currentUserID string) (*models.MangaRatingsSummary, error) {
-	summary := &models.MangaRatingsSummary{
-		MangaID: mangaID,
+// GetMangaRatings returns aggregate stats + recent ratings for a manga
+func (s *service) GetMangaRatings(ctx context.Context, mangaID string, limit, offset int) (*models.MangaRatingsResponse, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
 	}
 
-	// Get aggregate stats
-	agg, err := s.repo.GetAggregate(ctx, mangaID)
+	// Get summary (aggregate stats from manga table)
+	summary, err := s.repo.GetSummary(ctx, mangaID)
 	if err != nil {
-		return nil, models.NewAppError(models.ErrCodeInternal, "failed to get rating aggregate", 500, err)
+		return nil, models.NewAppError(models.ErrCodeInternal, "failed to get rating summary", 500, err)
 	}
-	summary.Aggregate = *agg
 
-	// Get recent ratings (limit 10)
-	recent, err := s.repo.GetByManga(ctx, mangaID, 10, 0)
+	// Get recent ratings with user info
+	ratings, err := s.repo.GetByManga(ctx, mangaID, limit, offset)
 	if err != nil {
 		return nil, models.NewAppError(models.ErrCodeInternal, "failed to get recent ratings", 500, err)
 	}
-	summary.RecentRatings = recent
 
-	// Get current user's rating if logged in
-	if currentUserID != "" {
-		userRating, err := s.repo.GetByUserAndManga(ctx, currentUserID, mangaID)
-		if err != nil {
-			// Log error but don't fail - user rating is optional
-			_ = err
-		}
-		summary.UserRating = userRating
-	}
-
-	return summary, nil
+	return &models.MangaRatingsResponse{
+		Summary: *summary,
+		Ratings: ratings,
+		Total:   summary.RatingCount,
+		Page:    offset/limit + 1,
+		HasMore: offset+limit < summary.RatingCount,
+	}, nil
 }
 
 // GetUserRating returns a specific user's rating for a manga
 func (s *service) GetUserRating(ctx context.Context, userID, mangaID string) (*models.MangaRating, error) {
+	if userID == "" || mangaID == "" {
+		return nil, models.NewAppError(models.ErrCodeValidation, "user_id and manga_id are required", 400, nil)
+	}
+
 	rating, err := s.repo.GetByUserAndManga(ctx, userID, mangaID)
 	if err != nil {
 		return nil, models.NewAppError(models.ErrCodeInternal, "failed to get user rating", 500, err)
@@ -105,25 +98,13 @@ func (s *service) GetUserRating(ctx context.Context, userID, mangaID string) (*m
 
 // DeleteRating removes a user's rating for a manga
 func (s *service) DeleteRating(ctx context.Context, userID, mangaID string) error {
+	if userID == "" || mangaID == "" {
+		return models.NewAppError(models.ErrCodeValidation, "user_id and manga_id are required", 400, nil)
+	}
+
 	err := s.repo.Delete(ctx, userID, mangaID)
 	if err != nil {
 		return models.NewAppError(models.ErrCodeNotFound, "rating not found", 404, err)
 	}
 	return nil
-}
-
-// GetTopRated returns top rated manga sorted by weighted rating
-func (s *service) GetTopRated(ctx context.Context, limit, offset int) ([]models.RatingAggregate, error) {
-	if limit <= 0 {
-		limit = 20
-	}
-	if limit > 100 {
-		limit = 100
-	}
-
-	ratings, err := s.repo.GetTopRatedManga(ctx, limit, offset)
-	if err != nil {
-		return nil, models.NewAppError(models.ErrCodeInternal, "failed to get top rated manga", 500, err)
-	}
-	return ratings, nil
 }

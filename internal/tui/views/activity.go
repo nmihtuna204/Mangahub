@@ -151,8 +151,8 @@ func (m ActivityModel) Init() tea.Cmd {
 func (m ActivityModel) loadActivities() tea.Msg {
 	ctx := context.Background()
 
-	// Try to get trending as a proxy for activity
-	trending, err := m.client.GetTrending(ctx, 10, 7)
+	// Get real activity feed from API
+	activityEntries, err := m.client.GetActivities(ctx, 20)
 	if err != nil {
 		// Generate mock activities if API fails
 		return ActivityLoadedMsg{
@@ -160,24 +160,58 @@ func (m ActivityModel) loadActivities() tea.Msg {
 		}
 	}
 
-	// Convert trending to activities
+	// Convert API ActivityEntry to view Activity struct
 	var activities []Activity
-	for i, manga := range trending {
-		if i >= 10 {
-			break
+	for _, entry := range activityEntries {
+		// Determine activity type from API's activity_type
+		var actType ActivityType
+		switch entry.ActivityType {
+		case "comment":
+			actType = ActivityComment
+		case "rating":
+			actType = ActivityRated
+		case "progress":
+			actType = ActivityProgress
+		case "list_add":
+			actType = ActivityStarted
+		default:
+			actType = ActivityProgress
 		}
+
+		// Build message from API data
+		message := ""
+		if entry.CommentText != "" {
+			message = entry.CommentText
+		}
+
+		// Extract rating and chapter
+		rating := 0.0
+		if entry.Rating != nil {
+			rating = *entry.Rating
+		}
+		chapter := 0
+		if entry.Chapter != nil {
+			chapter = *entry.Chapter
+		}
+
 		activities = append(activities, Activity{
-			ID:        fmt.Sprintf("act_%d", i),
-			Type:      []ActivityType{ActivityStarted, ActivityCompleted, ActivityRated}[i%3],
-			Username:  fmt.Sprintf("reader%d", i*7+1),
-			MangaID:   manga.MangaID,
-			MangaName: manga.Title,
-			Message:   getRandomMessage(i),
-			Rating:    4.5 + float64(i%5)*0.1,
-			Likes:     (i + 1) * 3,
-			Comments:  i % 5,
-			Timestamp: time.Now().Add(-time.Duration(i*5) * time.Minute),
+			ID:        entry.ID,
+			Type:      actType,
+			Username:  entry.Username,
+			MangaID:   entry.MangaID,
+			MangaName: entry.MangaTitle,
+			Message:   message,
+			Rating:    rating,
+			Chapter:   chapter,
+			Likes:     0, // Not provided by API
+			Comments:  0, // Not provided by API
+			Timestamp: entry.CreatedAt,
 		})
+	}
+
+	// Fallback to mock if no activities
+	if len(activities) == 0 {
+		return ActivityLoadedMsg{Activities: m.generateMockActivities()}
 	}
 
 	return ActivityLoadedMsg{Activities: activities}
