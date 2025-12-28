@@ -54,23 +54,27 @@ func (s *MangaServiceServer) GetManga(ctx context.Context, req *pb.GetMangaReque
 		return nil, err
 	}
 
-	// Load genres via separate query
+	// Load genres via separate query (limit to 20 for safety)
 	var genres []*pb.Genre
 	genreRows, err := s.db.QueryContext(ctx, `
-		SELECT g.id, g.name, g.slug FROM genres g
+		SELECT g.id, g.name FROM genres g
 		INNER JOIN manga_genres mg ON g.id = mg.genre_id
-		WHERE mg.manga_id = ?`, req.MangaId)
+		WHERE mg.manga_id = ?
+		LIMIT 20`, req.MangaId)
 	if err == nil {
 		defer genreRows.Close()
 		for genreRows.Next() {
-			var genre pb.Genre
-			if err := genreRows.Scan(&genre.Id, &genre.Name, &genre.Slug); err == nil {
-				genres = append(genres, &genre)
+			var gid, gname string
+			if err := genreRows.Scan(&gid, &gname); err == nil {
+				genres = append(genres, &pb.Genre{
+					Id:   gid,
+					Name: gname,
+				})
 			}
 		}
 	}
 
-	return &pb.MangaResponse{
+	resp := &pb.MangaResponse{
 		Id:            manga.ID,
 		Title:         manga.Title,
 		Author:        manga.Author,
@@ -84,7 +88,9 @@ func (s *MangaServiceServer) GetManga(ctx context.Context, req *pb.GetMangaReque
 		RatingCount:   int32(manga.RatingCount),
 		Year:          int32(manga.Year),
 		Genres:        genres,
-	}, nil
+	}
+
+	return resp, nil
 }
 
 // SearchManga searches for manga with filters

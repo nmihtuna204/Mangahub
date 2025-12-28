@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	"mangahub/pkg/logger"
@@ -114,15 +115,24 @@ func (s *NotificationServer) listenForRegistrations() {
 			logger.Debugf("UDP message from %s: %s", addr.String(), message)
 
 			// Simple protocol: "REGISTER" to register, "UNREGISTER" to unregister
-			switch message {
-			case "REGISTER":
+			if message == "REGISTER" {
 				s.register <- addr
 				// Send confirmation
 				s.sendTo(addr, []byte("REGISTERED"))
-			case "UNREGISTER":
+			} else if message == "UNREGISTER" {
 				s.unregister <- addr.String()
 				s.sendTo(addr, []byte("UNREGISTERED"))
-			default:
+			} else if strings.HasPrefix(message, "BROADCAST ") {
+				// Handle external broadcast request
+				payload := strings.TrimPrefix(message, "BROADCAST ")
+				var notification Notification
+				if err := json.Unmarshal([]byte(payload), &notification); err == nil {
+					s.Broadcast <- notification
+					logger.Infof("Received external broadcast request from %s", addr.String())
+				} else {
+					logger.Warnf("Invalid broadcast payload from %s: %v", addr.String(), err)
+				}
+			} else {
 				logger.Warnf("unknown UDP command from %s: %s", addr.String(), message)
 			}
 		}

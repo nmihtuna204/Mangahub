@@ -10,7 +10,7 @@ Write-Host "Checking prerequisites..." -ForegroundColor Yellow
 $servers = @(
     @{Name="HTTP API"; Port=8080},
     @{Name="TCP Sync"; Port=9090},
-    @{Name="UDP Notifier"; Port=9091},
+    @{Name="UDP Notifier"; Port=9095},
     @{Name="gRPC Service"; Port=9092}
 )
 
@@ -118,7 +118,7 @@ Write-Host "Test 4: UDP Notifier..." -ForegroundColor Yellow
 Write-Host "=====================================" -ForegroundColor Yellow
 try {
     $udpClient = New-Object System.Net.Sockets.UdpClient
-    $endpoint = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse("127.0.0.1"), 9091)
+    $endpoint = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse("127.0.0.1"), 9095)
     $msg = [System.Text.Encoding]::ASCII.GetBytes("REGISTER")
     $udpClient.Send($msg, $msg.Length, $endpoint) | Out-Null
     Write-Host "[PASS] UDP message sent" -ForegroundColor Green

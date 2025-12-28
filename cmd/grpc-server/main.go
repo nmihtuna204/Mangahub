@@ -56,7 +56,10 @@ func main() {
 		logger.Fatalf("failed to listen: %v", err)
 	}
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(
+		grpc.MaxRecvMsgSize(100*1024*1024), // 100MB
+		grpc.MaxSendMsgSize(100*1024*1024), // 100MB
+	)
 	mangaService := grpcpkg.NewMangaServiceServer(db.DB)
 	pb.RegisterMangaServiceServer(grpcServer, mangaService)
 

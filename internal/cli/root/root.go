@@ -6,9 +6,11 @@ import (
 
 	"mangahub/internal/cli/auth"
 	"mangahub/internal/cli/config"
+	"mangahub/internal/cli/debug"
 	"mangahub/internal/cli/library"
 	"mangahub/internal/cli/manga"
 	"mangahub/internal/cli/progress"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -45,6 +47,7 @@ func init() {
 	rootCmd.AddCommand(library.LibraryCmd)
 	rootCmd.AddCommand(progress.ProgressCmd)
 	rootCmd.AddCommand(config.ConfigCmd)
+	rootCmd.AddCommand(debug.DebugCmd)
 
 	// Version command
 	rootCmd.AddCommand(&cobra.Command{
