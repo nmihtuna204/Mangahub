@@ -81,8 +81,8 @@ func (s *service) GetTopRatedManga(ctx context.Context, limit, offset int) (*Lea
 	// Query manga with their rating stats and reader counts
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT 
-			m.id, m.title, m.cover_url, m.author,
-			COALESCE(AVG(r.overall_rating), 0) as avg_rating,
+			m.id, m.title, COALESCE(m.cover_url, ''), COALESCE(m.author, ''),
+			COALESCE(AVG(r.rating), 0) as avg_rating,
 			COUNT(DISTINCT r.id) as total_ratings,
 			COUNT(DISTINCT p.user_id) as total_readers
 		FROM manga m
@@ -98,7 +98,7 @@ func (s *service) GetTopRatedManga(ctx context.Context, limit, offset int) (*Lea
 	}
 	defer rows.Close()
 
-	var entries []MangaLeaderboardEntry
+	entries := []MangaLeaderboardEntry{}
 	rank := offset + 1
 	for rows.Next() {
 		var e MangaLeaderboardEntry
@@ -178,7 +178,7 @@ func (s *service) GetMostActiveUsers(ctx context.Context, limit, offset int) (*L
 	}
 	defer rows.Close()
 
-	var entries []UserLeaderboardEntry
+	entries := []UserLeaderboardEntry{}
 	rank := offset + 1
 	for rows.Next() {
 		var e UserLeaderboardEntry
@@ -208,7 +208,7 @@ func (s *service) GetMostActiveUsers(ctx context.Context, limit, offset int) (*L
 
 // GetTrendingManga returns manga with most activity in last N days
 // Activity = new ratings + new library adds + comments
-// Falls back to top manga by MAL score if no recent activity
+// Falls back to top manga by average rating if no recent activity
 func (s *service) GetTrendingManga(ctx context.Context, limit, offset int, days int) (*LeaderboardResponse, error) {
 	if limit <= 0 {
 		limit = 20
@@ -225,8 +225,8 @@ func (s *service) GetTrendingManga(ctx context.Context, limit, offset int, days 
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT 
-			m.id, m.title, m.cover_url, m.author,
-			COALESCE(AVG(r.overall_rating), 0) as avg_rating,
+			m.id, m.title, COALESCE(m.cover_url, ''), COALESCE(m.author, ''),
+			COALESCE(AVG(r.rating), 0) as avg_rating,
 			COUNT(DISTINCT r.id) as total_ratings,
 			COUNT(DISTINCT p.user_id) as total_readers
 		FROM manga m
@@ -242,7 +242,7 @@ func (s *service) GetTrendingManga(ctx context.Context, limit, offset int, days 
 	}
 	defer rows.Close()
 
-	var entries []MangaLeaderboardEntry
+	entries := []MangaLeaderboardEntry{}
 	rank := offset + 1
 	for rows.Next() {
 		var e MangaLeaderboardEntry
@@ -263,16 +263,16 @@ func (s *service) GetTrendingManga(ctx context.Context, limit, offset int, days 
 		rank++
 	}
 
-	// Fallback: If no trending data, show top manga by rating
-	if len(entries) == 0 {
+	// Fallback: If there is no recent activity at all, show top manga by rating
+	if len(entries) == 0 && offset == 0 {
 		fallbackRows, err := s.db.QueryContext(ctx, `
 			SELECT 
-				m.id, m.title, m.cover_url, m.author,
-				COALESCE(m.rating, 0) as avg_rating,
-				0 as total_ratings,
-				0 as total_readers
+				m.id, m.title, COALESCE(m.cover_url, ''), COALESCE(m.author, ''),
+				COALESCE(m.average_rating, 0) as avg_rating,
+				COALESCE(m.rating_count, 0) as total_ratings,
+				(SELECT COUNT(*) FROM reading_progress p WHERE p.manga_id = m.id) as total_readers
 			FROM manga m
-			ORDER BY m.rating DESC, m.title ASC
+			ORDER BY m.average_rating DESC, m.rating_count DESC, m.title ASC
 			LIMIT ? OFFSET ?`, limit, offset,
 		)
 		if err != nil {

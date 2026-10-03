@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mangahub/internal/cli/apiutil"
 	"net/http"
 	"os"
 	"path/filepath"
-	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"golang.org/x/term"
 )
 
 var loginCmd = &cobra.Command{
@@ -27,13 +26,14 @@ var loginCmd = &cobra.Command{
 			fmt.Scanln(&username)
 		}
 
-		fmt.Print("Password: ")
-		password, _ := term.ReadPassword(int(syscall.Stdin))
-		fmt.Println()
+		password, err := readPassword("Password: ")
+		if err != nil {
+			return err
+		}
 
 		body := map[string]string{
 			"username": username,
-			"password": string(password),
+			"password": password,
 		}
 
 		jsonBody, _ := json.Marshal(body)
@@ -70,8 +70,7 @@ var loginCmd = &cobra.Command{
 			fmt.Printf("  Welcome back, %s!\n", username)
 			fmt.Printf("  Token saved to: %s\n", filepath.Join(configDir, "config.yaml"))
 		} else {
-			errorData := result["error"].(map[string]interface{})
-			return fmt.Errorf("login failed: %v", errorData["message"])
+			return fmt.Errorf("login failed: %s", apiutil.ErrorMessage(result, resp.StatusCode))
 		}
 
 		return nil

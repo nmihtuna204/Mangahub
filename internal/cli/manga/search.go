@@ -21,6 +21,7 @@ var searchCmd = &cobra.Command{
 
 		limit, _ := cmd.Flags().GetInt("limit")
 		status, _ := cmd.Flags().GetString("status")
+		genre, _ := cmd.Flags().GetString("genre")
 
 		// Build query
 		params := url.Values{}
@@ -28,6 +29,9 @@ var searchCmd = &cobra.Command{
 		params.Set("limit", fmt.Sprintf("%d", limit))
 		if status != "" {
 			params.Set("status", status)
+		}
+		if genre != "" {
+			params.Set("genre", genre)
 		}
 
 		serverURL := fmt.Sprintf("http://%s:%d/manga?%s",
@@ -49,21 +53,24 @@ var searchCmd = &cobra.Command{
 			return fmt.Errorf("search failed")
 		}
 
-		data := result["data"].(map[string]interface{})
-		manga := data["data"].([]interface{})
-		total := data["total"].(float64)
+		data, _ := result["data"].(map[string]interface{})
+		manga, _ := data["data"].([]interface{})
+		total, _ := data["total"].(float64)
 
 		fmt.Printf("\nFound %d results:\n\n", int(total))
 
 		for i, m := range manga {
-			item := m.(map[string]interface{})
-			fmt.Printf("%d. %s\n", i+1, item["title"].(string))
-			fmt.Printf("   Author: %s\n", item["author"].(string))
-			fmt.Printf("   Status: %s\n", item["status"].(string))
+			item, ok := m.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			fmt.Printf("%d. %v\n", i+1, item["title"])
+			fmt.Printf("   Author: %v\n", item["author"])
+			fmt.Printf("   Status: %v\n", item["status"])
 			if chapters, ok := item["total_chapters"].(float64); ok {
 				fmt.Printf("   Chapters: %.0f\n", chapters)
 			}
-			fmt.Printf("   ID: %s\n\n", item["id"].(string))
+			fmt.Printf("   ID: %v\n\n", item["id"])
 		}
 
 		return nil
@@ -73,5 +80,6 @@ var searchCmd = &cobra.Command{
 func init() {
 	searchCmd.Flags().Int("limit", 10, "Number of results")
 	searchCmd.Flags().String("status", "", "Filter by status (ongoing, completed, hiatus)")
+	searchCmd.Flags().String("genre", "", "Filter by genre name or slug (e.g. action, slice-of-life)")
 	MangaCmd.AddCommand(searchCmd)
 }

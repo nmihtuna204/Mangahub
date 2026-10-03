@@ -43,7 +43,7 @@ func (r *repository) Create(ctx context.Context, activity *models.Activity) erro
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		activity.ID, activity.UserID, activity.Username, activity.ActivityType,
 		activity.MangaID, activity.MangaTitle, activity.ChapterNumber, activity.Rating,
-		activity.CommentText, activity.CreatedAt,
+		nullIfEmpty(activity.CommentText), activity.CreatedAt,
 	)
 	return err
 }
@@ -60,9 +60,9 @@ func (r *repository) GetRecent(ctx context.Context, limit, offset int) ([]models
 	// Get activities
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, user_id, username, activity_type, manga_id, manga_title, 
-		       chapter_number, rating, comment_text, created_at
+		       chapter_number, rating, COALESCE(comment_text, ''), created_at
 		FROM activity_feed
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, rowid DESC
 		LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query activities: %w", err)
@@ -80,6 +80,9 @@ func (r *repository) GetRecent(ctx context.Context, limit, offset int) ([]models
 		}
 		activities = append(activities, a)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate activities: %w", err)
+	}
 
 	return activities, total, nil
 }
@@ -95,10 +98,10 @@ func (r *repository) GetByUser(ctx context.Context, userID string, limit, offset
 
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, user_id, username, activity_type, manga_id, manga_title,
-		       chapter_number, rating, comment_text, created_at
+		       chapter_number, rating, COALESCE(comment_text, ''), created_at
 		FROM activity_feed
 		WHERE user_id = ?
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, rowid DESC
 		LIMIT ? OFFSET ?`, userID, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query user activities: %w", err)
@@ -116,6 +119,16 @@ func (r *repository) GetByUser(ctx context.Context, userID string, limit, offset
 		}
 		activities = append(activities, a)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate activities: %w", err)
+	}
 
 	return activities, total, nil
+}
+
+func nullIfEmpty(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
 }

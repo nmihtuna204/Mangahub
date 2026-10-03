@@ -10,6 +10,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -65,6 +66,20 @@ type ViewChangeMsg struct {
 type ErrorMsg struct {
 	Error error
 }
+
+// viewKeys lists keys that views handle themselves and that would otherwise
+// trigger a global shortcut (a = activity, c = chat, h = dashboard,
+// l = library): in the detail view a/c add to library and join the manga's
+// chat; h/l move left/right in detail and browse; l toggles live in activity.
+var viewKeys = map[View]map[string]bool{
+	ViewDetail:   {"a": true, "c": true, "h": true, "l": true},
+	ViewBrowse:   {"h": true, "l": true},
+	ViewActivity: {"l": true},
+}
+
+// UDPServerAddr is the UDP notification server the TUI subscribes to after login.
+// cmd/tui sets it from the loaded config.
+var UDPServerAddr = "localhost:9091"
 
 // UserLoggedInMsg signals successful login
 type UserLoggedInMsg struct {
@@ -153,9 +168,6 @@ type Model struct {
 
 	// Error handling
 	lastError error
-
-	// Loading state
-	loading bool
 
 	// Selected manga (for detail view)
 	selectedMangaID string
@@ -311,6 +323,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showComments = false
 				return m, nil
 			}
+			// A library modal (remove confirmation, chapter input) closes first
+			if m.currentView == ViewLibrary && m.libraryModel.HasModal() {
+				m.libraryModel = m.libraryModel.CloseModal()
+				return m, nil
+			}
 			// Always allow ESC to go back
 			if m.currentView != ViewDashboard {
 				m.currentView = m.previousView
@@ -326,6 +343,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// If in input mode, pass to view immediately (don't check global shortcuts)
 		if m.inputMode {
+			return m.updateCurrentView(msg)
+		}
+
+		// Keys a view uses itself win over the global shortcut on the same key
+		if viewKeys[m.currentView][msg.String()] {
 			return m.updateCurrentView(msg)
 		}
 
@@ -382,12 +404,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Login):
 			if m.authenticated {
 				// Already logged in, logout instead
-				m.client.ClearToken()
-				m.authenticated = false
-				m.user = nil
-				// Stop UDP listener on logout
-				m.udpListener.Stop()
-				return m, nil
+				return m, m.logout()
 			}
 			if m.currentView != ViewAuth {
 				m.previousView = m.currentView
@@ -406,16 +423,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.currentView != ViewChat {
 				m.previousView = m.currentView
 				m.currentView = ViewChat
+				m.unreadChatCount = 0
 				// Connect to general chat if no room specified
 				if m.chatModel.RoomID() == "" {
 					m.chatModel.SetRoom("general", "General Chat", "", "")
 				}
-				wsURL := strings.Replace(m.client.GetBaseURL(), "http://", "ws://", 1)
-				wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
-				return m, tea.Batch(
-					m.chatModel.Init(),
-					m.wsClient.Connect(wsURL, m.client.GetToken(), m.chatModel.RoomID()),
-				)
+				return m, m.joinChat(m.chatModel.RoomID())
 			}
 			return m, nil
 
@@ -447,8 +460,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.authenticated = true
 		// Update chat user info
 		m.chatModel.SetUser(msg.User.ID, msg.User.Username)
-		// Start UDP listener for real-time notifications
-		return m, m.udpListener.Start("9091")
+		// Register with the UDP server for real-time notifications
+		return m, m.udpListener.Start(UDPServerAddr, m.client.GetToken())
 
 	case ErrorMsg:
 		m.lastError = msg.Error
@@ -494,16 +507,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.authModel.Init()
 		}
 		// Set room info on chat model
-		m.chatModel.SetRoom(msg.RoomID, msg.RoomName, msg.MangaID, msg.MangaName)
+		if m.chatModel.RoomID() != msg.RoomID {
+			m.chatModel.SetRoom(msg.RoomID, msg.RoomName, msg.MangaID, msg.MangaName)
+		}
 		m.previousView = m.currentView
 		m.currentView = ViewChat
-		// Connect WebSocket
-		wsURL := strings.Replace(m.client.GetBaseURL(), "http://", "ws://", 1)
-		wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
-		return m, tea.Batch(
-			m.chatModel.Init(),
-			m.wsClient.Connect(wsURL, m.client.GetToken(), msg.RoomID),
-		)
+		m.unreadChatCount = 0
+		return m, m.joinChat(msg.RoomID)
 
 	case network.WSConnectedMsg:
 		// WebSocket connected successfully
@@ -516,10 +526,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.wsClient.ListenForMessages()
 
 	case network.WSDisconnectedMsg:
-		// WebSocket disconnected
+		// The connection dropped (intentional closes don't produce this message)
 		m.chatModel.SetStatus(views.StatusDisconnected)
-		// If we're in chat view, try to reconnect
-		if m.currentView == ViewChat {
+		if m.authenticated {
 			return m, m.wsClient.Reconnect()
 		}
 		return m, nil
@@ -531,7 +540,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case network.WSErrorMsg:
 		m.lastError = msg.Err
 		m.chatModel.SetStatus(views.StatusDisconnected)
-		if m.currentView == ViewChat {
+		if errors.Is(msg.Err, network.ErrReconnectGaveUp) {
+			m.toast.Show("Chat disconnected - open chat again to retry", 5*time.Second)
+			return m, nil
+		}
+		if m.authenticated && m.currentView == ViewChat {
 			return m, m.wsClient.Reconnect()
 		}
 		return m, nil
@@ -556,6 +569,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Continue listening for messages
 		return m, m.wsClient.ListenForMessages()
 
+	case views.ChatHistoryLoadedMsg:
+		m.chatModel, _ = m.chatModel.Update(msg)
+		return m, nil
+
 	case views.SendChatMsg:
 		// User wants to send a chat message
 		return m, m.wsClient.SendMessage(msg.RoomID, msg.Content)
@@ -574,8 +591,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case network.UDPErrorMsg:
-		// UDP error occurred
+		// UDP error occurred (e.g. notification server not running)
 		m.lastError = msg.Err
+		m.toast.Show("Live notifications unavailable: UDP server not reachable", 4*time.Second)
 		return m, nil
 
 	case network.UDPNotificationMsg:
@@ -673,7 +691,10 @@ func (m Model) updateCurrentView(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.currentView = ViewDashboard
 				}
-				return m, m.dashboardModel.Init()
+				return m, tea.Batch(
+					m.dashboardModel.Init(),
+					func() tea.Msg { return UserLoggedInMsg{User: user} },
+				)
 			}
 		}
 	case ViewHelp:
@@ -685,6 +706,60 @@ func (m Model) updateCurrentView(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, cmd
+}
+
+// joinChat connects the WebSocket to roomID unless it is already connected there
+func (m *Model) joinChat(roomID string) tea.Cmd {
+	if m.wsClient.IsConnectedTo(roomID) {
+		return nil
+	}
+	wsURL := strings.Replace(m.client.GetBaseURL(), "http://", "ws://", 1)
+	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+	// History first, then the live connection: no gap shown twice, no duplicates
+	return tea.Batch(
+		m.chatModel.Init(),
+		tea.Sequence(
+			m.loadChatHistory(roomID),
+			m.wsClient.Connect(wsURL, m.client.GetToken(), roomID),
+		),
+	)
+}
+
+// chatHistoryLimit is how many saved messages are shown when entering a room
+const chatHistoryLimit = 50
+
+// loadChatHistory fetches a room's recent saved messages
+func (m *Model) loadChatHistory(roomID string) tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		saved, err := client.GetRoomMessages(ctx, roomID, chatHistoryLimit)
+		if err != nil {
+			return nil // history is a nice-to-have; live chat still works
+		}
+		msgs := make([]views.ChatMessage, 0, len(saved))
+		for _, h := range saved {
+			msgs = append(msgs, views.ChatMessage{
+				ID: h.ID, RoomID: h.RoomID, UserID: h.UserID, Username: h.Username,
+				Content: h.Content, Type: "message", Timestamp: h.CreatedAt,
+			})
+		}
+		return views.ChatHistoryLoadedMsg{RoomID: roomID, Messages: msgs}
+	}
+}
+
+// logout clears the session and shuts down the real-time connections
+func (m *Model) logout() tea.Cmd {
+	m.client.ClearToken()
+	m.authenticated = false
+	m.user = nil
+	m.unreadChatCount = 0
+	// A fresh auth model, so its old "logged in" state can't log us straight back in
+	m.authModel = views.NewAuth()
+	m.chatModel.SetUser("", "")
+	m.chatModel.SetStatus(views.StatusDisconnected)
+	return tea.Batch(m.udpListener.Stop(), m.wsClient.Disconnect())
 }
 
 // handleCommand processes commands from the command palette
@@ -717,11 +792,7 @@ func (m Model) handleCommand(commandID string) (tea.Model, tea.Cmd) {
 		return m, m.activityModel.Init()
 	case "login":
 		if m.authenticated {
-			m.client.ClearToken()
-			m.authenticated = false
-			m.user = nil
-			// Stop UDP listener on logout
-			m.udpListener.Stop()
+			return m, m.logout()
 		} else {
 			m.previousView = m.currentView
 			m.currentView = ViewAuth
@@ -739,16 +810,12 @@ func (m Model) handleCommand(commandID string) (tea.Model, tea.Cmd) {
 		}
 		m.previousView = m.currentView
 		m.currentView = ViewChat
+		m.unreadChatCount = 0
 		// Connect to general chat if no room specified
 		if m.chatModel.RoomID() == "" {
 			m.chatModel.SetRoom("general", "General Chat", "", "")
 		}
-		wsURL := strings.Replace(m.client.GetBaseURL(), "http://", "ws://", 1)
-		wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
-		return m, tea.Batch(
-			m.chatModel.Init(),
-			m.wsClient.Connect(wsURL, m.client.GetToken(), m.chatModel.RoomID()),
-		)
+		return m, m.joinChat(m.chatModel.RoomID())
 	case "refresh":
 		// Refresh current view
 		switch m.currentView {
@@ -961,6 +1028,8 @@ func (m Model) isInputFocused() bool {
 		return m.authModel.IsInputFocused()
 	case ViewChat:
 		return m.chatModel.IsInputFocused()
+	case ViewLibrary:
+		return m.libraryModel.IsInputFocused()
 	default:
 		return false
 	}
@@ -975,7 +1044,6 @@ type ToastModel struct {
 	Content  string
 	Visible  bool
 	Duration time.Duration
-	timer    *time.Timer
 }
 
 // ToastTickMsg signals toast timer tick
@@ -1042,14 +1110,4 @@ func (t *ToastModel) View() string {
 		BorderForeground(lipgloss.Color("#FF8800"))
 
 	return toastStyle.Render("🔔 " + t.Content)
-}
-
-// =====================================
-// ERROR TYPES
-// =====================================
-
-type authRequiredError struct{}
-
-func (e *authRequiredError) Error() string {
-	return "Authentication required. Please login first."
 }

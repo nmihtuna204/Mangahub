@@ -60,6 +60,7 @@ var listenCmd = &cobra.Command{
 		// Start UDP Client
 		go func() {
 			client := udp.NewClient(udpHost, udpPort)
+			client.Token = viper.GetString("user.token") // logged in: also get new-chapter alerts for your library
 			client.OnNotification = func(n udp.Notification) {
 				fmt.Printf("[UDP] Notification: [%s] %s (Manga: %s)\n",
 					n.Type, n.Message, n.MangaID)

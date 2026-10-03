@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mangahub/internal/cli/apiutil"
 	"net/http"
 
 	"github.com/spf13/cobra"
@@ -29,11 +30,13 @@ var addCmd = &cobra.Command{
 			return fmt.Errorf("not logged in. Please run: mangahub auth login")
 		}
 
+		// If the manga is already in the library, only the flags given here change
 		body := map[string]interface{}{
-			"manga_id":        mangaID,
-			"current_chapter": chapter,
-			"status":          status,
-			"is_favorite":     false,
+			"manga_id": mangaID,
+			"status":   status,
+		}
+		if cmd.Flags().Changed("chapter") {
+			body["current_chapter"] = chapter
 		}
 
 		jsonBody, _ := json.Marshal(body)
@@ -62,8 +65,7 @@ var addCmd = &cobra.Command{
 			fmt.Printf("  Status: %s\n", status)
 			fmt.Printf("  Current chapter: %d\n", chapter)
 		} else {
-			errorData := result["error"].(map[string]interface{})
-			return fmt.Errorf("failed: %v", errorData["message"])
+			return fmt.Errorf("failed: %s", apiutil.ErrorMessage(result, resp.StatusCode))
 		}
 
 		return nil

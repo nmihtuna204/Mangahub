@@ -1,111 +1,180 @@
-# Phase 7: Integration Test - All 5 Protocols Working Together
+﻿# Phase 7: Integration Test - All 5 Protocols Working Together
+#
+# Subscribes to the TCP sync server, the UDP notifier and the manga's
+# WebSocket chat room, makes ONE progress update over HTTP, and checks that
+# the protocol bridge delivered it on each of them. (This script used to
+# print "TCP/UDP/WebSocket/gRPC triggered" without checking anything.)
+# The gRPC leg is an audit call whose only visible effect is an AUDIT line in
+# the gRPC server's log. Exits 1 if any check fails.
+
+$baseUrl = "http://localhost:8080"
+$failures = 0
+
+function Pass($msg) { Write-Host "[PASS] $msg" -ForegroundColor Green }
+function Fail($msg) { Write-Host "[FAIL] $msg" -ForegroundColor Red; $script:failures++ }
 
 Write-Host "=== PHASE 7: INTEGRATION & CROSS-PROTOCOL TEST ===" -ForegroundColor Cyan
 Write-Host ""
 
-$baseUrl = "http://localhost:8080"
-$token = ""
-
 # Step 1: Login
-Write-Host "Step 1: Login to get JWT token..." -ForegroundColor Yellow
+Write-Host "Step 1: Login as reader1..." -ForegroundColor Yellow
 try {
-    $loginBody = @{
-        username = 'reader1'
-        password = 'password123'
-    } | ConvertTo-Json
-    
+    $loginBody = @{ username = 'reader1'; password = 'password123' } | ConvertTo-Json
     $loginResp = Invoke-RestMethod -Uri "$baseUrl/auth/login" -Method POST -ContentType "application/json" -Body $loginBody
     $token = $loginResp.data.token
-    Write-Host "[OK] Logged in with token: $($token.Substring(0,20))..." -ForegroundColor Green
+    $userId = $loginResp.data.user.id
+    Pass "Logged in, token $($token.Substring(0,20))..."
 }
 catch {
-    Write-Host "[ERROR] Login failed: $_" -ForegroundColor Red
-    Write-Host "Make sure the API server is running and 'admin' user exists" -ForegroundColor Yellow
+    Fail "Login failed: $($_.Exception.Message)"
+    Write-Host "Make sure the API server is running (it seeds reader1 / password123)" -ForegroundColor Yellow
     exit 1
 }
+$headers = @{ "Authorization" = "Bearer $token"; "Content-Type" = "application/json" }
 
+# Pick the manga and the next chapter
+$searchResp = Invoke-RestMethod -Uri "$baseUrl/manga?q=one+piece&limit=1" -Method GET
+$mangaId = $searchResp.data.data[0].id
+$title = $searchResp.data.data[0].title
+$library = Invoke-RestMethod -Uri "$baseUrl/users/library" -Headers $headers
+$current = @($library.data | Where-Object { $_.manga_id -eq $mangaId })
+$chapter = 1
+if ($current.Count -gt 0) { $chapter = [int]$current[0].current_chapter + 1 }
+Write-Host "  Manga: $title ($mangaId), next chapter: $chapter" -ForegroundColor Gray
 Write-Host ""
 
-# Step 2: Update progress via HTTP (triggers bridge)
-Write-Host "Step 2: Updating manga progress via HTTP REST API..." -ForegroundColor Yellow
-Write-Host "This will trigger TCP, UDP, WebSocket, and gRPC broadcasts..." -ForegroundColor Cyan
+# Step 2: Subscribe on every protocol
+Write-Host "Step 2: Subscribing to TCP, UDP and WebSocket..." -ForegroundColor Yellow
 
+# TCP sync client
+$tcp = $null
 try {
-    $headers = @{
-        "Authorization" = "Bearer $token"
-        "Content-Type" = "application/json"
+    $tcp = New-Object System.Net.Sockets.TcpClient
+    $tcp.Connect("localhost", 9090)
+    $tcp.GetStream().ReadTimeout = 5000
+    $tcpReader = New-Object System.IO.StreamReader($tcp.GetStream())
+    Pass "TCP sync client connected"
+}
+catch { Fail "TCP sync server not reachable: $($_.Exception.Message)"; $tcp = $null }
+
+# UDP subscriber
+$udp = New-Object System.Net.Sockets.UdpClient
+$udpServer = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse("127.0.0.1"), 9091)
+$udpOk = $false
+try {
+    $reg = [System.Text.Encoding]::ASCII.GetBytes("REGISTER")
+    $udp.Send($reg, $reg.Length, $udpServer) | Out-Null
+    $udp.Client.ReceiveTimeout = 2000
+    $from = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+    $udpOk = [System.Text.Encoding]::UTF8.GetString($udp.Receive([ref]$from)) -eq "REGISTERED"
+}
+catch { }
+if ($udpOk) { Pass "UDP subscriber registered" } else { Fail "UDP notifier did not confirm REGISTER" }
+
+# WebSocket member of the manga's room
+$ws = New-Object System.Net.WebSockets.ClientWebSocket
+$ws.Options.SetRequestHeader("Authorization", "Bearer $token")
+try { $ws.ConnectAsync([Uri]"ws://localhost:8080/ws/chat?room_id=manga_$mangaId", [Threading.CancellationToken]::None).Wait() } catch { }
+if ($ws.State -eq 'Open') { Pass "WebSocket joined room manga_$mangaId" } else { Fail "WebSocket connect failed (state $($ws.State))" }
+
+# Reads WebSocket frames until $match returns true for one, or $timeoutMs passes
+function Wait-WS($match, $timeoutMs) {
+    $deadline = (Get-Date).AddMilliseconds($timeoutMs)
+    while ($ws.State -eq 'Open' -and (Get-Date) -lt $deadline) {
+        $buf = New-Object byte[] 16384
+        $seg = New-Object System.ArraySegment[byte] -ArgumentList @(, $buf)
+        $cts = New-Object System.Threading.CancellationTokenSource
+        $cts.CancelAfter([Math]::Max(1, [int]($deadline - (Get-Date)).TotalMilliseconds))
+        try { $t = $ws.ReceiveAsync($seg, $cts.Token); $t.Wait(); $res = $t.Result } catch { return $null }
+        try { $m = [System.Text.Encoding]::UTF8.GetString($buf, 0, $res.Count) | ConvertFrom-Json } catch { continue }
+        if (& $match $m) { return $m }
     }
-    
-    $updateBody = @{
-        manga_id = "3051a7b2-b47f-4e37-9204-231ce56b7dfb"  # One Piece UUID
-        current_chapter = 999
-        status = "reading"
-        rating = 9
-    } | ConvertTo-Json
+    return $null
+}
+if ($ws.State -eq 'Open') { Wait-WS { param($m) $m.type -eq "join" } 3000 | Out-Null }
+Write-Host ""
 
-    $updateResp = Invoke-RestMethod -Uri "$baseUrl/users/progress" `
-        -Method PUT `
-        -Headers $headers `
-        -Body $updateBody
-
-    Write-Host "[OK] Progress updated via HTTP" -ForegroundColor Green
-    Write-Host "  Manga ID: $($updateResp.data.manga_id)" -ForegroundColor Gray
-    Write-Host "  Chapter: $($updateResp.data.current_chapter)" -ForegroundColor Gray
-    Write-Host "  Status: $($updateResp.data.status)" -ForegroundColor Gray
+# Step 3: One HTTP update
+Write-Host "Step 3: PUT /users/progress (chapter $chapter)..." -ForegroundColor Yellow
+try {
+    $updateBody = @{ manga_id = $mangaId; current_chapter = $chapter; status = "reading" } | ConvertTo-Json
+    $updateResp = Invoke-RestMethod -Uri "$baseUrl/users/progress" -Method PUT -Headers $headers -Body $updateBody
+    if ($updateResp.data.current_chapter -eq $chapter) { Pass "HTTP: progress saved (chapter $chapter)" }
+    else { Fail "HTTP: response chapter $($updateResp.data.current_chapter)" }
 }
 catch {
-    Write-Host "[ERROR] Progress update failed: $_" -ForegroundColor Red
+    Fail "HTTP update failed: $($_.Exception.Message)"
     exit 1
 }
-
-Write-Host ""
-Write-Host "🔄 BRIDGE TRIGGERED:" -ForegroundColor Cyan
-Write-Host "  ✓ TCP sync server: Progress broadcast to all connected clients" -ForegroundColor Green
-Write-Host "  ✓ UDP notifier: Chapter release notification sent" -ForegroundColor Green
-Write-Host "  ✓ WebSocket chat: Room members notified in real-time" -ForegroundColor Green
-Write-Host "  ✓ gRPC audit: Progress update logged via gRPC" -ForegroundColor Green
-
 Write-Host ""
 
-# Step 3: Get library to verify
-Write-Host "Step 3: Verifying update in user library..." -ForegroundColor Yellow
+# Step 4: Did the bridge deliver it everywhere?
+Write-Host "Step 4: Checking every protocol received it..." -ForegroundColor Yellow
+
+if ($tcp) {
+    $got = $false
+    try {
+        while (-not $got) {
+            $line = $tcpReader.ReadLine()
+            if ($null -eq $line) { break }
+            try { $u = $line | ConvertFrom-Json } catch { continue }
+            $got = ($u.manga_id -eq $mangaId -and $u.chapter -eq $chapter -and $u.user_id -eq $userId)
+        }
+    }
+    catch { }
+    if ($got) { Pass "TCP: sync clients got {manga_id, chapter $chapter}" } else { Fail "TCP: no update within 5 s" }
+}
+
+if ($udpOk) {
+    $got = $false
+    $udp.Client.ReceiveTimeout = 5000
+    try {
+        while (-not $got) {
+            $data = [System.Text.Encoding]::UTF8.GetString($udp.Receive([ref]$from))
+            try { $n = $data | ConvertFrom-Json } catch { continue }
+            $got = ($n.type -eq "progress_update" -and $n.manga_id -eq $mangaId -and $n.chapter -eq $chapter)
+        }
+    }
+    catch { }
+    if ($got) { Pass "UDP: subscribers got a progress_update notification ('$($n.message)')" } else { Fail "UDP: no notification within 5 s" }
+}
+
+if ($ws.State -eq 'Open') {
+    $notice = Wait-WS { param($m) $m.type -eq "system" -and $m.content -like "*chapter $chapter of*" } 5000
+    if ($notice) { Pass "WebSocket: room got '$($notice.content)'" } else { Fail "WebSocket: no system notice within 5 s" }
+}
+
+Write-Host "[INFO] gRPC: the bridge's audit call shows up as an AUDIT line in the gRPC server log" -ForegroundColor Gray
+Write-Host ""
+
+# Step 5: The stored entry
+Write-Host "Step 5: Verifying the library entry..." -ForegroundColor Yellow
 try {
-    $libraryResp = Invoke-RestMethod -Uri "$baseUrl/users/library" `
-        -Method GET `
-        -Headers $headers
-
-    if ($libraryResp.data.Count -gt 0) {
-        Write-Host "[OK] Library retrieved with $($libraryResp.data.Count) manga" -ForegroundColor Green
-        $firstItem = $libraryResp.data[0]
-        Write-Host "  First item: $($firstItem.manga.title) - Chapter $($firstItem.reading_progress.current_chapter)" -ForegroundColor Gray
+    $libraryResp = Invoke-RestMethod -Uri "$baseUrl/users/library" -Method GET -Headers $headers
+    $entry = @($libraryResp.data | Where-Object { $_.manga_id -eq $mangaId })
+    if ($entry.Count -eq 1 -and $entry[0].current_chapter -eq $chapter) {
+        Pass "Library: $($entry[0].manga.title) is on chapter $chapter"
     }
-    else {
-        Write-Host "[WARNING] Library is empty" -ForegroundColor Yellow
-    }
+    else { Fail "Library entry not updated" }
 }
-catch {
-    Write-Host "[ERROR] Failed to retrieve library: $_" -ForegroundColor Red
+catch { Fail "Failed to retrieve library: $($_.Exception.Message)" }
+
+# Cleanup
+try {
+    $unreg = [System.Text.Encoding]::ASCII.GetBytes("UNREGISTER")
+    $udp.Send($unreg, $unreg.Length, $udpServer) | Out-Null
 }
+catch { }
+$udp.Close()
+if ($tcp) { $tcp.Close() }
+if ($ws.State -eq 'Open') {
+    try { $ws.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, "done", [Threading.CancellationToken]::None).Wait(2000) | Out-Null } catch { }
+}
+$ws.Dispose()
 
 Write-Host ""
-
-Write-Host "================================" -ForegroundColor Green
-Write-Host " ✅ PHASE 7 INTEGRATION COMPLETE" -ForegroundColor Green
-Write-Host "================================" -ForegroundColor Green
-
-Write-Host ""
-Write-Host "All 5 Protocols Working Together:" -ForegroundColor Cyan
-Write-Host "  1. HTTP REST API - User updates progress via REST endpoint" -ForegroundColor White
-Write-Host "  2. TCP Sync Server - Progress broadcasted to sync clients" -ForegroundColor White
-Write-Host "  3. UDP Notifier - Chapter release notifications sent" -ForegroundColor White
-Write-Host "  4. WebSocket Chat - Real-time room notifications" -ForegroundColor White
-Write-Host "  5. gRPC Service - Audit logging of all updates" -ForegroundColor White
-
-Write-Host ""
-Write-Host "Check server logs for detailed protocol interaction messages" -ForegroundColor Gray
-Write-Host ""
-Write-Host "To verify all protocols:" -ForegroundColor Yellow
-Write-Host "  - Check HTTP server logs for 'Bridge: Broadcasting progress update'" -ForegroundColor Gray
-Write-Host "  - Check TCP server logs for incoming progress messages" -ForegroundColor Gray
-Write-Host "  - Check UDP server logs for notification broadcasts" -ForegroundColor Gray
-Write-Host "  - Check gRPC server logs for UpdateProgress calls" -ForegroundColor Gray
+if ($failures -gt 0) {
+    Write-Host "=== INTEGRATION TEST: $failures check(s) FAILED ===" -ForegroundColor Red
+    exit 1
+}
+Write-Host "=== INTEGRATION TEST: one HTTP update reached HTTP, TCP, UDP and WebSocket ===" -ForegroundColor Green

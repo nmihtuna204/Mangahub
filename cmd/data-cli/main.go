@@ -26,6 +26,7 @@ import (
 
 	"mangahub/pkg/cache"
 	"mangahub/pkg/config"
+	"mangahub/pkg/database"
 	"mangahub/pkg/external"
 	"mangahub/pkg/importer"
 	"mangahub/pkg/models"
@@ -102,7 +103,6 @@ type model struct {
 	// Data
 	searchResults   []models.ExternalMangaData
 	topMangaList    []models.ExternalMangaData
-	importPreviews  []importer.MangaPreview
 	lastImportStats importer.ImportStats
 	dbStats         dbStatistics
 
@@ -211,7 +211,8 @@ func initializeApp() tea.Msg {
 
 	// Initialize database
 	dbPath := filepath.Join(".", "data", "mangahub.db")
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=foreign_keys(1)")
+	// WAL + busy timeout like the servers, so writes wait instead of failing while they run
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)")
 	if err != nil {
 		return initMsg{err: fmt.Errorf("database error: %w", err)}
 	}
@@ -247,6 +248,9 @@ func setDefaults(cfg *config.Config) {
 	cfg.Redis.Host = "localhost"
 	cfg.Redis.Port = 6379
 	cfg.Redis.PoolSize = 10
+	cfg.UDP.Host = "localhost"
+	cfg.UDP.Port = 9091
+	cfg.Chapters.Language = "en"
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -625,7 +629,7 @@ func (m model) fetchDBStats() tea.Cmd {
 func (m model) fetchCacheStats() tea.Cmd {
 	return func() tea.Msg {
 		if m.redisCache == nil {
-			return cacheStatsMsg{keys: 0, err: fmt.Errorf("Redis not connected")}
+			return cacheStatsMsg{keys: 0, err: fmt.Errorf("redis not connected")}
 		}
 
 		ctx := context.Background()
@@ -656,7 +660,7 @@ func (m model) runPipelineTest() tea.Cmd {
 		m.dataImporter.ResetStats()
 		_, err = m.dataImporter.ImportOne(ctx, results[0])
 		if err != nil {
-			return importDoneMsg{err: fmt.Errorf("Import test failed: %w", err)}
+			return importDoneMsg{err: fmt.Errorf("import test failed: %w", err)}
 		}
 
 		return importDoneMsg{stats: m.dataImporter.GetStats()}
@@ -901,12 +905,19 @@ func runCLIMode(args []string) {
 
 	// Initialize database
 	dbPath := filepath.Join(".", "data", "mangahub.db")
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=foreign_keys(1)")
+	// WAL + busy timeout like the servers, so writes wait instead of failing while they run
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)")
 	if err != nil {
 		fmt.Printf("❌ Database error: %v\n", err)
 		return
 	}
 	defer db.Close()
+
+	// Bring the schema up to date (the servers do this on start; data-cli may run first)
+	if err := (&database.DB{DB: db}).Migrate(); err != nil {
+		fmt.Printf("❌ Database migration error: %v\n", err)
+		return
+	}
 
 	// Initialize clients
 	mangadex := external.NewMangaDexClient(&cfg.MangaDex)
@@ -1026,6 +1037,9 @@ func runCLIMode(args []string) {
 		fmt.Printf("✅ Done! Inserted: %d, Updated: %d, Failed: %d\n",
 			stats.Inserted, stats.Updated, stats.Failed)
 
+	case "sync-chapters", "sync":
+		runSyncChapters(cfg, db, args[2:])
+
 	case "stats":
 		fmt.Println("📊 Database Statistics")
 		fmt.Println("─────────────────────")
@@ -1068,10 +1082,13 @@ func printCLIHelp() {
 	fmt.Println("  importj <query>  Search Jikan/MAL and import (recommended)")
 	fmt.Println("  top [count]      Import top manga from MAL (default: 25)")
 	fmt.Println("  stats            Show database statistics")
+	fmt.Println("  sync-chapters    Check MangaDex for new chapters and notify readers (UDP)")
+	fmt.Println("                   [--link] [--dry-run] [--manga <id>] [--limit <n>]")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  data-cli                     # Launch TUI")
 	fmt.Println("  data-cli searchj \"one piece\" # Search Jikan")
 	fmt.Println("  data-cli importj naruto      # Import from Jikan")
 	fmt.Println("  data-cli top 50              # Import top 50")
+	fmt.Println("  data-cli sync-chapters --link --dry-run   # Preview new chapters")
 }

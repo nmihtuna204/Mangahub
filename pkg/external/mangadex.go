@@ -321,6 +321,48 @@ func (c *MangaDexClient) GetChapterList(ctx context.Context, mangaID string, lim
 	return &result, nil
 }
 
+// LatestChapterNumber returns the highest chapter number ("1194", "1095.5")
+// published for a manga in the given language, or "" if there are none.
+func (c *MangaDexClient) LatestChapterNumber(ctx context.Context, mangaID, lang string) (string, error) {
+	if err := c.rateLimiter.Wait(ctx); err != nil {
+		return "", fmt.Errorf("rate limiter cancelled: %w", err)
+	}
+
+	params := url.Values{}
+	params.Set("manga", mangaID)
+	params.Set("limit", "1")
+	params.Set("order[chapter]", "desc")
+	if lang != "" {
+		params.Set("translatedLanguage[]", lang)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/chapter?%s", c.baseURL, params.Encode()), nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var result MangaDexChapterResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+	if len(result.Data) == 0 {
+		return "", nil
+	}
+	return result.Data[0].Attributes.Chapter, nil
+}
+
 // ToExternalMangaData converts MangaDex response to internal model
 func (m *MangaDexManga) ToExternalMangaData() models.ExternalMangaData {
 	// Get English title, fallback to first available

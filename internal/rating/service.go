@@ -8,6 +8,7 @@ package rating
 
 import (
 	"context"
+	"errors"
 
 	"mangahub/pkg/models"
 	"mangahub/pkg/utils"
@@ -44,6 +45,10 @@ func (s *service) Rate(ctx context.Context, userID, mangaID string, req models.C
 		return nil, models.NewAppError(models.ErrCodeValidation, "invalid rating data", 400, err)
 	}
 
+	if err := s.requireManga(ctx, mangaID); err != nil {
+		return nil, err
+	}
+
 	// Validation is handled by struct tags in CreateRatingRequest (min=1, max=10)
 	rating, err := s.repo.CreateOrUpdate(ctx, userID, mangaID, req)
 	if err != nil {
@@ -60,6 +65,10 @@ func (s *service) GetMangaRatings(ctx context.Context, mangaID string, limit, of
 	}
 	if offset < 0 {
 		offset = 0
+	}
+
+	if err := s.requireManga(ctx, mangaID); err != nil {
+		return nil, err
 	}
 
 	// Get summary (aggregate stats from manga table)
@@ -103,8 +112,23 @@ func (s *service) DeleteRating(ctx context.Context, userID, mangaID string) erro
 	}
 
 	err := s.repo.Delete(ctx, userID, mangaID)
-	if err != nil {
+	if errors.Is(err, ErrRatingNotFound) {
 		return models.NewAppError(models.ErrCodeNotFound, "rating not found", 404, err)
+	}
+	if err != nil {
+		return models.NewAppError(models.ErrCodeInternal, "failed to delete rating", 500, err)
+	}
+	return nil
+}
+
+// requireManga returns a 404 AppError when the manga does not exist.
+func (s *service) requireManga(ctx context.Context, mangaID string) error {
+	exists, err := s.repo.MangaExists(ctx, mangaID)
+	if err != nil {
+		return models.NewAppError(models.ErrCodeInternal, "failed to look up manga", 500, err)
+	}
+	if !exists {
+		return models.NewAppError(models.ErrCodeNotFound, "manga not found", 404, models.ErrMangaNotFound)
 	}
 	return nil
 }

@@ -12,6 +12,7 @@ type CustomList struct {
 	Description string    `json:"description" db:"description"`
 	IsPublic    bool      `json:"is_public" db:"is_public"`
 	SortOrder   int       `json:"sort_order" db:"sort_order"`
+	ItemCount   int       `json:"item_count" db:"-"` // computed
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
@@ -54,9 +55,8 @@ type UpdateListRequest struct {
 
 // AddToListRequest is used to add manga to a custom list
 type AddToListRequest struct {
-	MangaID   string `json:"manga_id" validate:"required"`
-	Notes     string `json:"notes,omitempty"`
-	SortOrder int    `json:"sort_order,omitempty"`
+	MangaID string `json:"manga_id" validate:"required"`
+	Notes   string `json:"notes,omitempty" validate:"max=500"`
 }
 
 // ReorderListRequest is used to reorder items in a list

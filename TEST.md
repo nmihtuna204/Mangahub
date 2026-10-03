@@ -169,7 +169,7 @@ This script runs:
 #### TC-UDP-003: Multiple Subscribers
 **Objective**: Verify broadcast to multiple clients  
 **Expected**: All registered clients receive notifications  
-**Script**: `.\test-udp.ps1` (Test 3)
+**Script**: `bash test/load_test.sh` (Test 4: 50 subscribers), `go test ./internal/udp/`
 
 #### TC-UDP-004: Notification Content
 **Objective**: Verify notification contains correct data  
@@ -231,7 +231,7 @@ This script runs:
 
 #### TC-GRPC-004: UpdateProgress RPC
 **Objective**: Verify UpdateProgress updates reading progress  
-**Expected**: Progress updated and confirmed  
+**Expected**: Progress updated and confirmed (the script logs in as reader1 first: `UpdateProgress` needs `authorization: Bearer <jwt>` metadata and returns `UNAUTHENTICATED` without it)  
 **Script**: `.\test-grpc.ps1` (Test 4)
 
 ---
@@ -259,71 +259,67 @@ This script runs:
 
 ### 1. HTTP REST API Manual Testing
 
+> Note: on Windows PowerShell use `curl.exe` (plain `curl` is an alias for `Invoke-WebRequest`).
+
 #### Test: User Registration
 
 1. Open a terminal/PowerShell
 2. Run registration command:
 ```powershell
-curl -X POST http://localhost:8080/api/v1/auth/register `
+curl.exe -X POST http://localhost:8080/auth/register `
   -H "Content-Type: application/json" `
-  -d '{"username":"manualtest","email":"manual@test.com","password":"Test1234"}'
+  -d '{\"username\":\"manualtest\",\"email\":\"manual@test.com\",\"password\":\"Test1234\"}'
 ```
 3. **Expected Result**: Status 201, returns user object with ID
-4. **Verify**: Username is unique (trying again should fail with 409)
+4. **Verify**: Username is unique (trying again should fail)
 
 #### Test: User Login
 
 1. Run login command:
 ```powershell
-curl -X POST http://localhost:8080/api/v1/auth/login `
+curl.exe -X POST http://localhost:8080/auth/login `
   -H "Content-Type: application/json" `
-  -d '{"username":"manualtest","password":"Test1234"}'
+  -d '{\"username\":\"manualtest\",\"password\":\"Test1234\"}'
 ```
 2. **Expected Result**: Status 200, returns JWT token
 3. **Verify**: Copy the token for next tests
 
-#### Test: List Manga
+#### Test: List & Search Manga
 
 ```powershell
-curl -X GET "http://localhost:8080/api/v1/manga?limit=5&offset=0"
+curl.exe "http://localhost:8080/manga?limit=5&offset=0"
+curl.exe "http://localhost:8080/manga?q=one+piece"
 ```
-**Expected**: Returns array of 5 manga with pagination info
-
-#### Test: Search Manga
-
-```powershell
-curl -X GET "http://localhost:8080/api/v1/manga/search?q=one+piece"
-```
-**Expected**: Returns manga matching search term
+**Expected**: Returns manga list with pagination info; note a manga `id` (UUID) for the next tests
 
 #### Test: Add to Library (Protected)
 
 ```powershell
-# Replace YOUR_TOKEN with JWT from login
-curl -X POST http://localhost:8080/api/v1/progress `
+# Replace YOUR_TOKEN with JWT from login, MANGA_ID with a UUID from the list above
+curl.exe -X POST http://localhost:8080/users/library `
   -H "Authorization: Bearer YOUR_TOKEN" `
   -H "Content-Type: application/json" `
-  -d '{"manga_id":"MANGA_ID","current_chapter":1,"status":"reading"}'
+  -d '{\"manga_id\":\"MANGA_ID\",\"current_chapter\":1,\"status\":\"reading\"}'
 ```
-**Expected**: Status 201, progress created
+**Expected**: Status 201, manga added to library
 
-#### Test: Update Progress (Protected)
+#### Test: Update Progress (Protected) — triggers all 5 protocols
 
 ```powershell
-curl -X PUT http://localhost:8080/api/v1/progress/MANGA_ID `
+curl.exe -X PUT http://localhost:8080/users/progress `
   -H "Authorization: Bearer YOUR_TOKEN" `
   -H "Content-Type: application/json" `
-  -d '{"current_chapter":5,"status":"reading"}'
+  -d '{\"manga_id\":\"MANGA_ID\",\"current_chapter\":5,\"status\":\"reading\"}'
 ```
-**Expected**: Status 200, progress updated
+**Expected**: Status 200, progress updated; server logs show TCP/UDP/WS/gRPC bridge broadcasts
 
-#### Test: Get My Progress (Protected)
+#### Test: Get My Library (Protected)
 
 ```powershell
-curl -X GET http://localhost:8080/api/v1/progress `
+curl.exe http://localhost:8080/users/library `
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
-**Expected**: Returns array of user's progress entries
+**Expected**: Returns array of the user's library entries
 
 ---
 
@@ -406,7 +402,11 @@ grpcurl -plaintext localhost:9092 list
 #### Test: Get Manga
 
 ```powershell
-grpcurl -plaintext -d '{"manga_id":"3051a7b2-b47f-4e37-9204-231ce56b7dfb"}' localhost:9092 mangahub.v1.MangaService/GetManga
+# Look up a real ID first (IDs are generated at seed time):
+grpcurl -plaintext -d '{\"query\":\"naruto\",\"limit\":1}' localhost:9092 mangahub.v1.MangaService/SearchManga
+
+# Then fetch it by ID:
+grpcurl -plaintext -d '{\"manga_id\":\"<uuid-from-search>\"}' localhost:9092 mangahub.v1.MangaService/GetManga
 ```
 **Expected**: Returns manga details in JSON
 
@@ -432,7 +432,7 @@ curl -X GET http://localhost:8080/health
 #### 2. Register User
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/auth/register \
+curl -X POST http://localhost:8080/auth/register \
   -H "Content-Type: application/json" \
   -d '{
     "username": "curluser",
@@ -444,7 +444,7 @@ curl -X POST http://localhost:8080/api/v1/auth/register \
 #### 3. Login
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/auth/login \
+curl -X POST http://localhost:8080/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "username": "curluser",
@@ -457,31 +457,30 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 #### 4. List All Manga
 
 ```bash
-curl -X GET "http://localhost:8080/api/v1/manga?limit=10&offset=0"
+curl "http://localhost:8080/manga?limit=10&offset=0"
 ```
 
 #### 5. Get Manga by ID
 
 ```bash
-curl -X GET http://localhost:8080/api/v1/manga/MANGA_ID
+curl http://localhost:8080/manga/MANGA_ID
 ```
 
 #### 6. Search Manga
 
 ```bash
-curl -X GET "http://localhost:8080/api/v1/manga/search?q=naruto"
+curl "http://localhost:8080/manga?q=naruto"
 ```
 
 #### 7. Add Manga to Library (Protected)
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/progress \
+curl -X POST http://localhost:8080/users/library \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "manga_id": "MANGA_ID",
     "current_chapter": 1,
-    "total_chapters": 100,
     "status": "reading"
   }'
 ```
@@ -489,27 +488,28 @@ curl -X POST http://localhost:8080/api/v1/progress \
 #### 8. Update Reading Progress (Protected)
 
 ```bash
-curl -X PUT http://localhost:8080/api/v1/progress/MANGA_ID \
+curl -X PUT http://localhost:8080/users/progress \
   -H "Authorization: Bearer YOUR_JWT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
+    "manga_id": "MANGA_ID",
     "current_chapter": 25,
     "status": "reading",
     "rating": 9
   }'
 ```
 
-#### 9. Get My Progress (Protected)
+#### 9. Get My Library (Protected)
 
 ```bash
-curl -X GET http://localhost:8080/api/v1/progress \
+curl http://localhost:8080/users/library \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
-#### 10. Delete Progress (Protected)
+#### 10. Remove Manga from Library (Protected)
 
 ```bash
-curl -X DELETE http://localhost:8080/api/v1/progress/MANGA_ID \
+curl -X DELETE http://localhost:8080/users/library/MANGA_ID \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
@@ -699,13 +699,13 @@ Remove-Item data/mangahub.db
 ### Load Testing
 
 ```bash
-# Install Apache Bench
-# Test API endpoint
-ab -n 1000 -c 10 http://localhost:8080/api/v1/manga
-
-# Or use the load test script
-.\test\load_test.sh
+# Needs only bash (Git Bash on Windows) and curl; grpcurl is optional
+bash test/load_test.sh      # or: make load-test
 ```
+
+It sends 100 HTTP requests (10 at a time), 10 concurrent TCP sync clients, 20 concurrent gRPC calls and 50 UDP subscribers, checks every response and exits 1 on any failure. It stays under the API's default rate limit (50 requests/s per IP, bursts of 100); for heavier tests set `rate_limit: 0` under `server:` in the config.
+
+Every `test-*.ps1` script also exits 1 when a check fails, so they can be chained or used in CI.
 
 ### Database Inspection
 

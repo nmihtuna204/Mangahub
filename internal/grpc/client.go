@@ -72,7 +72,6 @@ func (c *Client) UpdateProgress(userID, mangaID string, chapter int32, status st
 		MangaId:        mangaID,
 		CurrentChapter: chapter,
 		Status:         status,
-		Rating:         0,
 	})
 	if err != nil {
 		logger.Errorf("UpdateProgress failed: %v", err)

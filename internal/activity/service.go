@@ -110,6 +110,10 @@ func FormatActivityMessage(activity models.Activity) string {
 	case models.ActivityComment:
 		return fmt.Sprintf("%s commented on %s", activity.Username, activity.MangaTitle)
 
+	case models.ActivityListAdd:
+		// comment_text holds the list name for list_add entries
+		return fmt.Sprintf("%s added %s to the list %q", activity.Username, activity.MangaTitle, activity.CommentText)
+
 	default:
 		return fmt.Sprintf("%s activity on %s", activity.Username, activity.MangaTitle)
 	}

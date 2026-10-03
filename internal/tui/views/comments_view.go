@@ -194,9 +194,11 @@ func (m CommentsView) Update(msg tea.Msg) (CommentsView, tea.Cmd) {
 	case CommentsLoadedMsg:
 		m.comments = msg.Comments
 		m.loading = false
+		m.lastError = nil
 		m.viewport.SetContent(m.renderCommentsList())
 
 	case CommentPostedMsg:
+		m.lastError = nil
 		m.posting = false
 		m.composing = false
 		m.textarea.Reset()
@@ -266,8 +268,7 @@ func (m CommentsView) View() string {
 	// Error display
 	if m.lastError != nil {
 		errorMsg := m.theme.ErrorText.Render(fmt.Sprintf("Error: %v", m.lastError))
-		sections = append(sections, errorMsg)
-		m.lastError = nil // Clear after display
+		sections = append(sections, errorMsg) // cleared in Update on the next successful load/post
 	}
 
 	// Comments count

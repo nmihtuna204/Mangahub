@@ -6,15 +6,15 @@ import (
 
 // User represents a system user
 type User struct {
-	ID           string    `json:"id" db:"id"`
-	Username     string    `json:"username" db:"username" validate:"required,min=3,max=50"`
-	Email        string    `json:"email" db:"email" validate:"required,email"`
-	PasswordHash string    `json:"-" db:"password_hash"`
-	DisplayName  string    `json:"display_name" db:"display_name"`
-	Role         string    `json:"role" db:"role"` // user, admin
-	IsActive     bool      `json:"is_active" db:"is_active"`
-	CreatedAt    time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
+	ID           string     `json:"id" db:"id"`
+	Username     string     `json:"username" db:"username" validate:"required,min=3,max=50"`
+	Email        string     `json:"email" db:"email" validate:"required,email"`
+	PasswordHash string     `json:"-" db:"password_hash"`
+	DisplayName  string     `json:"display_name" db:"display_name"`
+	Role         string     `json:"role" db:"role"` // user, admin
+	IsActive     bool       `json:"is_active" db:"is_active"`
+	CreatedAt    time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at" db:"updated_at"`
 	LastLoginAt  *time.Time `json:"last_login_at,omitempty" db:"last_login_at"`
 }
 
@@ -24,6 +24,7 @@ type UserProfile struct {
 	Username    string     `json:"username"`
 	DisplayName string     `json:"display_name"`
 	AvatarURL   string     `json:"avatar_url"`
+	Role        string     `json:"role,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
 }

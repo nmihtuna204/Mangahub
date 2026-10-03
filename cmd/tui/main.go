@@ -25,6 +25,7 @@ func main() {
 	// Initialize API client
 	baseURL := fmt.Sprintf("http://%s:%d", cfg.Server.Host, cfg.Server.Port)
 	api.InitClient(baseURL)
+	tui.UDPServerAddr = fmt.Sprintf("%s:%d", cfg.UDP.Host, cfg.UDP.Port)
 
 	// Create the TUI application
 	app := tui.NewApp()

@@ -29,6 +29,7 @@ type client struct {
 
 type ProgressSyncServer struct {
 	Addr       string
+	listenerMu sync.Mutex // Serve sets listener while Stop may run on another goroutine
 	listener   net.Listener
 	clientsMu  sync.RWMutex
 	clients    map[ClientID]*client
@@ -54,8 +55,15 @@ func (s *ProgressSyncServer) Start() error {
 	if err != nil {
 		return fmt.Errorf("listen tcp: %w", err)
 	}
+	return s.Serve(l)
+}
+
+// Serve accepts sync clients on an existing listener until Stop is called.
+func (s *ProgressSyncServer) Serve(l net.Listener) error {
+	s.listenerMu.Lock()
 	s.listener = l
-	logger.Infof("TCP Progress Sync Server listening on %s", s.addr())
+	s.listenerMu.Unlock()
+	logger.Infof("TCP Progress Sync Server listening on %s", l.Addr())
 
 	go s.runHub()
 
@@ -106,7 +114,9 @@ func (s *ProgressSyncServer) runHub() {
 				logger.Errorf("failed to marshal update: %v", err)
 				continue
 			}
-			s.broadcastBytes(data)
+			// The same slice goes to every client, so it must be complete
+			// (newline included) and never modified after this point
+			s.broadcastBytes(append(data, '\n'))
 
 		case <-s.stop:
 			logger.Info("TCP hub stopping...")
@@ -138,20 +148,11 @@ func (s *ProgressSyncServer) handleConnection(conn net.Conn) {
 
 	s.register <- c
 
-	wg := sync.WaitGroup{}
-	wg.Add(2)
+	// writeLoop exits when unregister closes c.send; on a write error it
+	// closes the connection, which in turn ends readLoop below.
+	go s.writeLoop(c)
 
-	go func() {
-		defer wg.Done()
-		s.readLoop(c)
-	}()
-
-	go func() {
-		defer wg.Done()
-		s.writeLoop(c)
-	}()
-
-	wg.Wait()
+	s.readLoop(c) // returns when the client disconnects
 	s.unregister <- c
 	_ = conn.Close()
 }
@@ -176,16 +177,30 @@ func (s *ProgressSyncServer) readLoop(c *client) {
 
 func (s *ProgressSyncServer) writeLoop(c *client) {
 	for msg := range c.send {
-		_, err := c.conn.Write(append(msg, '\n'))
+		_, err := c.conn.Write(msg)
 		if err != nil {
 			logger.Warnf("write error to %s: %v", c.id, err)
+			_ = c.conn.Close()
+			// Drain until unregister closes the channel, so broadcasts in the
+			// meantime don't log "buffer full" for a client that is going away.
+			for range c.send {
+			}
 			return
 		}
 	}
 }
 
+// ClientCount returns the number of connected sync clients.
+func (s *ProgressSyncServer) ClientCount() int {
+	s.clientsMu.RLock()
+	defer s.clientsMu.RUnlock()
+	return len(s.clients)
+}
+
 func (s *ProgressSyncServer) Stop() error {
 	close(s.stop)
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
 	if s.listener != nil {
 		return s.listener.Close()
 	}

@@ -64,11 +64,16 @@ mangahub auth login --username <name>
 ### Manga Discovery
 ```bash
 # Search manga
-mangahub manga search <query> [--limit <n>] [--status <status>]
+mangahub manga search <query> [--limit <n>] [--status <status>] [--genre <genre>]
+
+# Show full details (author, status, chapters, genres, rating, description)
+mangahub manga info <manga-id>
 
 # Examples:
 mangahub manga search "one piece" --limit 5
 mangahub manga search "naruto" --status completed
+mangahub manga search "a" --genre "slice of life"
+mangahub manga info 08e7857c-040a-42c3-8f36-23792f4807fc
 ```
 
 ### Library Management
@@ -87,11 +92,18 @@ mangahub library list
 ### Reading Progress
 ```bash
 # Update progress (syncs across all 5 protocols!)
-mangahub progress update --manga-id <id> --chapter <n> [--rating <r>] [--status <s>]
+# Only the flags you pass change; --rating (1-10) also rates the manga
+mangahub progress update --manga-id <id> [--chapter <n>] [--status <s>] [--rating <r>]
+
+# View progress: every manga in your library, or one in detail
+mangahub progress view [--manga-id <id>]
 
 # Examples:
-mangahub progress update --manga-id manga-001 --chapter 75 --rating 9
-mangahub progress update --manga-id manga-002 --chapter 100 --status completed
+mangahub progress update --manga-id <id> --chapter 75 --rating 9
+mangahub progress update --manga-id <id> --status completed
+mangahub progress view
+#   ★ One Piece                   [█░░░░░░░░░] ch 120/1100 (11%)  reading
+mangahub progress view --manga-id <id>
 ```
 
 ### Configuration

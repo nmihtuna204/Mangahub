@@ -1,6 +1,7 @@
-FROM golang:1.21-alpine AS builder
-
-RUN apk add --no-cache git build-base
+# Image with only the api-server. The usual way to run MangaHub in Docker is
+# docker-compose.yml (one image, see ../Dockerfile); this builds one service.
+#   docker build -t mangahub-api -f docker/<this file> .
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /build
 
@@ -9,17 +10,18 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=1 GOOS=linux go build -o api-server ./cmd/api-server
+# Pure-Go SQLite driver: no C toolchain needed
+RUN CGO_ENABLED=0 GOOS=linux go build -o api-server ./cmd/api-server
 
 FROM alpine:latest
 
-RUN apk add --no-cache ca-certificates sqlite-libs
+RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 
 COPY --from=builder /build/api-server .
 COPY configs/ ./configs/
-COPY data/ ./data/
+RUN mkdir -p /app/data
 
 EXPOSE 8080
 

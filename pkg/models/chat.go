@@ -14,17 +14,17 @@ import (
 
 // ChatMessage represents a single chat message
 type ChatMessage struct {
-	ID          string       `json:"id" db:"id"`
-	RoomID      string       `json:"room_id" db:"room_id"`
-	UserID      string       `json:"user_id" db:"user_id"`
-	Username    string       `json:"username" db:"-"` // Joined from users table
-	Content     string       `json:"content" db:"content"`
-	ReplyToID   *string      `json:"reply_to_id,omitempty" db:"reply_to_id"`
-	ReplyTo     *ChatMessage `json:"reply_to,omitempty" db:"-"` // Nested reply
-	IsEdited    bool         `json:"is_edited" db:"is_edited"`
-	IsDeleted   bool         `json:"is_deleted" db:"is_deleted"`
-	CreatedAt   time.Time    `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time    `json:"updated_at" db:"updated_at"`
+	ID        string       `json:"id" db:"id"`
+	RoomID    string       `json:"room_id" db:"room_id"`
+	UserID    string       `json:"user_id" db:"user_id"`
+	Username  string       `json:"username" db:"-"` // Joined from users table
+	Content   string       `json:"content" db:"content"`
+	ReplyToID *string      `json:"reply_to_id,omitempty" db:"reply_to_id"`
+	ReplyTo   *ChatMessage `json:"reply_to,omitempty" db:"-"` // Nested reply
+	IsEdited  bool         `json:"is_edited" db:"is_edited"`
+	IsDeleted bool         `json:"is_deleted" db:"is_deleted"`
+	CreatedAt time.Time    `json:"created_at" db:"created_at"`
+	UpdatedAt time.Time    `json:"updated_at" db:"updated_at"`
 }
 
 // ChatRoom represents a chat room/channel

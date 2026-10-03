@@ -1,83 +1,111 @@
-# UDP Notification Server Test
-$serverHost = "localhost"
+﻿# UDP Notification Server Test
+# Registers a subscriber, has a second socket ask the server to broadcast a
+# notification, and checks that the subscriber receives it (and stops
+# receiving after UNREGISTER). Exits 1 if any check fails.
+#
+# Note: `udp-server -demo` also sends a sample notification every 10 s, but
+# that is opt-in, so this test sends its own instead of waiting for one.
+
 $serverPort = 9091
+$failures = 0
+$server = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse("127.0.0.1"), $serverPort)
+
+function Pass($msg) { Write-Host "[PASS] $msg" -ForegroundColor Green }
+function Fail($msg) { Write-Host "[FAIL] $msg" -ForegroundColor Red; $script:failures++ }
+
+function Send-Text($client, $text) {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
+    $client.Send($bytes, $bytes.Length, $server) | Out-Null
+}
+
+# Returns the next datagram as text, or $null after $timeoutMs
+function Receive-Text($client, $timeoutMs) {
+    $client.Client.ReceiveTimeout = $timeoutMs
+    $from = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+    try { return [System.Text.Encoding]::UTF8.GetString($client.Receive([ref]$from)) }
+    catch [System.Net.Sockets.SocketException] { return $null }
+}
+
+# Waits for a notification whose message is $text, skipping other datagrams
+# (e.g. progress updates from other users)
+function Wait-Notification($client, $text, $timeoutMs) {
+    $deadline = (Get-Date).AddMilliseconds($timeoutMs)
+    while ((Get-Date) -lt $deadline) {
+        $left = [int]($deadline - (Get-Date)).TotalMilliseconds
+        if ($left -lt 1) { break }
+        $data = Receive-Text $client $left
+        if ($null -eq $data) { break }
+        try { $n = $data | ConvertFrom-Json } catch { continue }
+        if ($n.message -eq $text) { return $n }
+    }
+    return $null
+}
+
+function Send-Broadcast($text) {
+    $payload = @{
+        type      = "system"
+        manga_id  = ""
+        message   = $text
+        timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    } | ConvertTo-Json -Compress
+    $sender = New-Object System.Net.Sockets.UdpClient
+    Send-Text $sender "BROADCAST $payload"
+    $sender.Close()
+}
 
 Write-Host "=== UDP Notification Server Test ===" -ForegroundColor Cyan
 Write-Host ""
 
-# Test 1: Check if server is running
-Write-Host "Test 1: Checking if UDP server is running..." -ForegroundColor Yellow
-
+# Test 1: Register
+Write-Host "Test 1: Registering a subscriber..." -ForegroundColor Yellow
 $client = New-Object System.Net.Sockets.UdpClient
-try {
-    $serverEndpoint = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse("127.0.0.1"), $serverPort)
-    
-    # Send REGISTER message
-    $registerMsg = [System.Text.Encoding]::ASCII.GetBytes("REGISTER")
-    $client.Send($registerMsg, $registerMsg.Length, $serverEndpoint) | Out-Null
-    
-    # Wait for confirmation
-    $client.Client.ReceiveTimeout = 2000
-    $remoteEP = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
-    $response = $client.Receive([ref]$remoteEP)
-    $confirmation = [System.Text.Encoding]::ASCII.GetString($response)
-    
-    if ($confirmation -eq "REGISTERED") {
-        Write-Host "[PASS] Server is running and client registered!" -ForegroundColor Green
-    } else {
-        Write-Host "[FAIL] Unexpected response: $confirmation" -ForegroundColor Red
-        exit 1
-    }
+try { Send-Text $client "REGISTER" } catch { }
+$reply = Receive-Text $client 2000
+if ($reply -eq "REGISTERED") {
+    Pass "Server is running and the subscriber is registered"
 }
-catch {
-    Write-Host "[FAIL] Server not responding: $_" -ForegroundColor Red
-    Write-Host "Start server with: go run cmd/udp-server/main.go" -ForegroundColor Yellow
+else {
+    Fail "No REGISTERED reply (got '$reply')"
+    Write-Host "Start the server with: go run ./cmd/udp-server" -ForegroundColor Yellow
     exit 1
 }
-
 Write-Host ""
 
-# Test 2: Listen for notifications
-Write-Host "Test 2: Listening for notifications (10 seconds)..." -ForegroundColor Yellow
-Write-Host "The server sends demo notifications every 10 seconds" -ForegroundColor Cyan
-
-$receivedCount = 0
-$endTime = (Get-Date).AddSeconds(12)
-
-try {
-    $client.Client.ReceiveTimeout = 500
-    while ((Get-Date) -lt $endTime) {
-        try {
-            $data = $client.Receive([ref]$remoteEP)
-            $message = [System.Text.Encoding]::ASCII.GetString($data)
-            
-            Write-Host "[RECEIVED] $message" -ForegroundColor Green
-            $receivedCount++
-        }
-        catch [System.Net.Sockets.SocketException] {
-            # Timeout, continue
-        }
-    }
+# Test 2: Receive a broadcast
+Write-Host "Test 2: Broadcasting a notification from another socket..." -ForegroundColor Yellow
+$text = "ps-udp-test-$(Get-Random)"
+Send-Broadcast $text
+$n = Wait-Notification $client $text 3000
+if ($n) {
+    Pass "Subscriber received the notification (type=$($n.type), message=$($n.message))"
 }
-catch {
-    Write-Host "Error: $_" -ForegroundColor Red
+else {
+    Fail "Subscriber did not receive the broadcast within 3 s"
 }
-
 Write-Host ""
 
-if ($receivedCount -gt 0) {
-    Write-Host "[PASS] Received $receivedCount notification(s)" -ForegroundColor Green
-} else {
-    Write-Host "[INFO] No notifications received yet (server sends every 10s)" -ForegroundColor Yellow
+# Test 3: Unregister
+Write-Host "Test 3: Unregistering..." -ForegroundColor Yellow
+Send-Text $client "UNREGISTER"
+$reply = $null
+$deadline = (Get-Date).AddSeconds(2)
+while ($reply -ne "UNREGISTERED" -and (Get-Date) -lt $deadline) {
+    $reply = Receive-Text $client 2000
+    if ($null -eq $reply) { break }
 }
+if ($reply -eq "UNREGISTERED") { Pass "Server confirmed UNREGISTER" }
+else { Fail "No UNREGISTERED reply" }
 
-# Cleanup
-Write-Host ""
-Write-Host "Unregistering client..." -ForegroundColor Cyan
-$unregisterMsg = [System.Text.Encoding]::ASCII.GetBytes("UNREGISTER")
-$client.Send($unregisterMsg, $unregisterMsg.Length, $serverEndpoint) | Out-Null
+$text2 = "ps-udp-after-unregister-$(Get-Random)"
+Send-Broadcast $text2
+if (Wait-Notification $client $text2 1000) { Fail "Still receiving notifications after UNREGISTER" }
+else { Pass "No notifications after UNREGISTER" }
+
 $client.Close()
 
 Write-Host ""
-Write-Host "=== Test Complete ===" -ForegroundColor Cyan
-Write-Host "UDP server is working and broadcasting notifications" -ForegroundColor Green
+if ($failures -gt 0) {
+    Write-Host "=== UDP test: $failures check(s) FAILED ===" -ForegroundColor Red
+    exit 1
+}
+Write-Host "=== UDP test: all checks passed ===" -ForegroundColor Green

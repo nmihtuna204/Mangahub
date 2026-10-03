@@ -72,12 +72,25 @@ func (h *Handler) GetMe(c *gin.Context) {
 		return
 	}
 
+	// The token only carries id and username; load the full, current profile
+	profile, err := h.svc.GetUserByID(c.Request.Context(), user.ID)
+	if err != nil {
+		if appErr, ok := err.(*models.AppError); ok {
+			c.JSON(appErr.StatusCode,
+				models.NewErrorResponse(appErr.Code, appErr.Message, appErr.Details))
+			return
+		}
+		c.JSON(http.StatusInternalServerError,
+			models.NewErrorResponse(models.ErrCodeInternal, "failed to load profile", nil))
+		return
+	}
+
 	c.JSON(http.StatusOK,
-		models.NewSuccessResponse(user, "user profile retrieved"))
+		models.NewSuccessResponse(profile, "user profile retrieved"))
 }
 
 // Logout handles user logout
-// Note: With stateless JWT, we just return success. 
+// Note: With stateless JWT, we just return success.
 // Token blacklisting will be implemented with Redis in Phase 2.
 func (h *Handler) Logout(c *gin.Context) {
 	user := GetCurrentUser(c)

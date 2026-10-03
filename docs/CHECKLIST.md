@@ -1,5 +1,7 @@
 # Project Completion Checklist
 
+*Re-verified against the code on 2026-09-30. Items marked `[x]` exist and are covered by tests unless noted; evidence is in parentheses.*
+
 ## Core Protocol Implementation (40 points)
 
 ### HTTP REST API (15 pts)
@@ -31,7 +33,7 @@
 - [x] JSON notification protocol
 - [x] Broadcast to all registered clients
 - [x] Chapter release notifications
-- [x] Demo notification timer
+- [x] Demo notification timer (opt-in: `udp-server -demo`)
 - [x] Error handling
 
 ### WebSocket Chat (10 pts)
@@ -60,14 +62,14 @@
 - [x] HTTP triggers TCP broadcast
 - [x] HTTP triggers UDP notification
 - [x] HTTP triggers gRPC logging
-- [x] HTTP triggers WebSocket notification
+- [x] HTTP triggers WebSocket notification (system notice in room `manga_<id>`; `test/e2e_test.go` TestProgressFansOutToAllProtocols)
 
 ### CLI Tool (15 pts)
 - [x] Cobra CLI framework
 - [x] Auth commands (login, register)
-- [x] Manga commands (search, info)
+- [x] Manga commands (search, info) (`mangahub manga info <id>`, `--genre` filter on search)
 - [x] Library commands (add, list)
-- [x] Progress commands (update, view)
+- [x] Progress commands (update, view) (`mangahub progress view [--manga-id]`)
 - [x] Config commands
 - [x] Version information
 - [x] Help documentation
@@ -76,14 +78,16 @@
 - [x] Unit tests for auth
 - [x] Unit tests for manga
 - [x] Unit tests for progress
-- [x] Integration tests
-- [x] Load testing scripts
-- [x] Test coverage reporting
-- [x] CI/CD ready
+- [x] Unit tests for every protocol: TCP, UDP, WebSocket hub, gRPC service, protocol bridge (23 packages have tests)
+- [x] Integration tests (`test/`: whole system in-process, no servers needed; live tests with `MANGAHUB_LIVE=1`)
+- [x] Load testing scripts (`test/load_test.sh`: bash + curl, checks every request; measured results in `docs/KNOWN_ISSUES.md` → Performance)
+- [x] PowerShell test scripts check their results and exit 1 on failure (`test-*.ps1`)
+- [x] Test coverage reporting (`make test-coverage`; ~71% of backend + protocol code, ~48% overall incl. TUI rendering)
+- [x] CI: GitHub Actions runs gofmt, vet, build and race-detector tests with coverage on every push (`.github/workflows/ci.yml`). CD is not set up
 
 ### Documentation (15 pts)
 - [x] README.md with full overview
-- [x] API documentation
+- [x] API documentation (`docs/API.md`)
 - [x] Deployment guide
 - [x] Architecture diagram
 - [x] Database schema
@@ -111,15 +115,18 @@
 - [x] JWT authentication
 - [x] Password hashing (bcrypt)
 - [x] Input validation
-- [x] Error message sanitization
-- [x] CORS support
+- [x] Error message sanitization (internal errors logged, not returned)
+- [x] CORS support (`internal/server`)
+- [x] Rate limiting per client IP (`internal/ratelimit`; stricter on login/register)
+- [x] gRPC authentication (JWT interceptor on `UpdateProgress`, own progress only)
+- [x] UDP subscriptions expire without a heartbeat (`udp.subscriber_ttl`)
 
 ### Performance
 - [x] Concurrent request handling
 - [x] Connection pooling
 - [x] Query optimization
 - [x] Buffer management
-- [x] Load testing passed
+- [x] Load testing passed (0 errors across all measured workloads)
 
 ## Deployment Ready
 
@@ -127,20 +134,20 @@
 - [x] Logging setup
 - [x] Database initialization
 - [x] Service startup scripts
-- [x] Graceful shutdown
+- [x] Graceful shutdown (all four servers handle Ctrl+C / SIGTERM; the API server also closes WebSocket clients with 1001 and saves queued chat messages)
 - [x] Error recovery
 - [x] Status monitoring
 
 ## Documentation Complete
 
 - [x] README
-- [x] API docs
+- [x] API docs (`docs/API.md`)
 - [x] Deployment guide
 - [x] Development guide
 - [x] Architecture documentation
 - [x] Demo script
 - [x] Troubleshooting guide
-- [x] Contributing guidelines
+- [ ] Contributing guidelines (no CONTRIBUTING.md yet)
 
 ---
 
@@ -156,8 +163,8 @@ go build -o bin/udp-server ./cmd/udp-server
 go build -o bin/grpc-server ./cmd/grpc-server
 go build -o bin/mangahub ./cmd/cli
 
-# Run tests
-go test -v ./...
+# Run tests (unit + in-process end-to-end; no servers needed)
+go test ./...   # CI also runs this with -race
 
 # Check formatting
 go fmt ./...
@@ -172,4 +179,4 @@ ls -la *.md
 git log --oneline -10
 ```
 
-✅ **All items checked = Ready for Submission!**
+✅ **All items checked except Contributing guidelines.**

@@ -1,7 +1,11 @@
-# gRPC Service Test Script
-# Tests the gRPC MangaService with 3 RPC methods
+﻿# gRPC Service Test Script
+# Tests the gRPC MangaService with 3 RPC methods. Exits 1 if any check fails.
 
 $grpcServer = "localhost:9092"
+$failures = 0
+
+function Pass($msg) { Write-Host "[PASS] $msg" -ForegroundColor Green }
+function Fail($msg) { Write-Host "[FAIL] $msg" -ForegroundColor Red; $script:failures++ }
 
 Write-Host "=== gRPC Service Test ===" -ForegroundColor Cyan
 Write-Host ""
@@ -44,11 +48,29 @@ catch {
 
 Write-Host ""
 
+# Look up a real manga ID first (IDs are generated at seed time)
+$mangaId = $null
+try {
+    # Note: keep the query free of spaces - PowerShell 5.1 splits args that
+    # contain both embedded quotes and spaces when calling native commands.
+    $lookup = & grpcurl -plaintext -d '{\"query\":\"naruto\",\"limit\":1,\"offset\":0}' $grpcServer mangahub.v1.MangaService/SearchManga 2>&1 | Out-String
+    if ($lookup -match '"id":\s*"([^"]+)"') {
+        $mangaId = $matches[1]
+        Write-Host "Using manga ID: $mangaId" -ForegroundColor Gray
+    }
+}
+catch { }
+if (-not $mangaId) {
+    Fail "Could not look up a manga ID with SearchManga"
+    exit 1
+}
+
+Write-Host ""
+
 # Test 2: GetManga
 Write-Host "Test 2: Testing GetManga RPC..." -ForegroundColor Yellow
 try {
-    # Using actual UUID from database for One Piece
-    $getMangaResp = & grpcurl -plaintext -d '{\"manga_id\":\"3051a7b2-b47f-4e37-9204-231ce56b7dfb\"}' $grpcServer mangahub.v1.MangaService/GetManga 2>&1 | Out-String
+    $getMangaResp = & grpcurl -plaintext -d ('{\"manga_id\":\"' + $mangaId + '\"}') $grpcServer mangahub.v1.MangaService/GetManga 2>&1 | Out-String
 
     if ($getMangaResp -like '*"title"*') {
         Write-Host "[PASS] GetManga RPC working" -ForegroundColor Green
@@ -57,12 +79,12 @@ try {
             Write-Host "  Found manga: $($matches[1])" -ForegroundColor Gray
         }
     } else {
-        Write-Host "[FAIL] GetManga did not return expected data" -ForegroundColor Red
+        Fail "GetManga did not return expected data"
         Write-Host "Response: $getMangaResp" -ForegroundColor Gray
     }
 }
 catch {
-    Write-Host "[FAIL] GetManga RPC error: $_" -ForegroundColor Red
+    Fail "GetManga RPC error: $_"
 }
 
 Write-Host ""
@@ -79,12 +101,12 @@ try {
             Write-Host "  Total results: $($matches[1])" -ForegroundColor Gray
         }
     } else {
-        Write-Host "[FAIL] SearchManga did not return expected data" -ForegroundColor Red
+        Fail "SearchManga did not return expected data"
         Write-Host "Response: $searchResp" -ForegroundColor Gray
     }
 }
 catch {
-    Write-Host "[FAIL] SearchManga RPC error: $_" -ForegroundColor Red
+    Fail "SearchManga RPC error: $_"
 }
 
 Write-Host ""
@@ -92,10 +114,24 @@ Write-Host ""
 # Test 4: UpdateProgress
 Write-Host "Test 4: Testing UpdateProgress RPC..." -ForegroundColor Yellow
 try {
-    # Using username "reader1" (will be converted to UUID by service)
-    $updateJson = '{\"user_id\":\"reader1\",\"manga_id\":\"3051a7b2-b47f-4e37-9204-231ce56b7dfb\",\"current_chapter\":50,\"status\":\"reading\",\"rating\":8}'
+    # UpdateProgress requires the caller's JWT, and only for their own progress:
+    # log in as reader1 over HTTP and send the token as gRPC metadata
+    $loginBody = @{ username = "reader1"; password = "password123" } | ConvertTo-Json
+    $token = (Invoke-RestMethod -Method Post -Uri "http://localhost:8080/auth/login" -ContentType "application/json" -Body $loginBody).data.token
 
-    $updateResp = & grpcurl -plaintext -d $updateJson $grpcServer mangahub.v1.MangaService/UpdateProgress 2>&1 | Out-String
+    # Using username "reader1" (will be converted to UUID by service)
+    $updateJson = '{\"user_id\":\"reader1\",\"manga_id\":\"' + $mangaId + '\",\"current_chapter\":50,\"status\":\"reading\"}'
+
+    # Without the token the server must refuse
+    $anonResp = & grpcurl -plaintext -d $updateJson $grpcServer mangahub.v1.MangaService/UpdateProgress 2>&1 | Out-String
+    if ($anonResp -like '*Unauthenticated*') {
+        Write-Host "[PASS] UpdateProgress without a token is rejected (Unauthenticated)" -ForegroundColor Green
+    } else {
+        Fail "UpdateProgress without a token was not rejected"
+        Write-Host "Response: $anonResp" -ForegroundColor Gray
+    }
+
+    $updateResp = & grpcurl -plaintext -H "authorization: Bearer $token" -d $updateJson $grpcServer mangahub.v1.MangaService/UpdateProgress 2>&1 | Out-String
 
     if ($updateResp -like '*"currentChapter"*') {
         Write-Host "[PASS] UpdateProgress RPC working" -ForegroundColor Green
@@ -104,19 +140,23 @@ try {
             Write-Host "  Updated to chapter: $($matches[1])" -ForegroundColor Gray
         }
     } else {
-        Write-Host "[FAIL] UpdateProgress did not return expected data" -ForegroundColor Red
+        Fail "UpdateProgress did not return expected data"
         Write-Host "Response: $updateResp" -ForegroundColor Gray
     }
 }
 catch {
-    Write-Host "[FAIL] UpdateProgress RPC error: $_" -ForegroundColor Red
+    Fail "UpdateProgress RPC error: $_"
 }
 
 Write-Host ""
-Write-Host "=== gRPC Tests Complete ===" -ForegroundColor Cyan
-Write-Host "All 3 core gRPC methods have been tested" -ForegroundColor Green
+if ($failures -gt 0) {
+    Write-Host "=== gRPC Tests: $failures check(s) FAILED ===" -ForegroundColor Red
+} else {
+    Write-Host "=== gRPC Tests: all checks passed ===" -ForegroundColor Green
+}
 Write-Host ""
 Write-Host "Summary:" -ForegroundColor Cyan
 Write-Host "  - GetManga: Retrieves single manga by ID" -ForegroundColor Gray
 Write-Host "  - SearchManga: Searches with filters and pagination" -ForegroundColor Gray
-Write-Host "  - UpdateProgress: Updates user reading progress" -ForegroundColor Gray
+Write-Host "  - UpdateProgress: Updates user reading progress (needs a JWT: -H 'authorization: Bearer <token>')" -ForegroundColor Gray
+if ($failures -gt 0) { exit 1 }

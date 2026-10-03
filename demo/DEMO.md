@@ -34,6 +34,11 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/users/library
 
 ### 4. **MAIN DEMO: Protocol Integration** (5 min)
 
+Manga IDs are UUIDs. Pick one first (e.g. One Piece) and use it below as `$MANGA_ID`:
+```bash
+mangahub manga search "One Piece" --limit 1   # copy the ID line
+```
+
 **Terminal A: Monitor TCP broadcasts**
 ```bash
 nc localhost 9090
@@ -43,21 +48,39 @@ nc localhost 9090
 **Terminal B: Monitor UDP notifications**
 ```powershell
 ./test-udp-simple.ps1
-# Will show chapter notifications
+# Will show a "progress_update" notification for every progress change
+# (start the UDP server with -demo to also get a sample notification every 10s)
 ```
 
 **Terminal C: Monitor WebSocket chat**
 ```bash
-wscat -c "ws://localhost:8080/ws/chat?room_id=one-piece"
-# Will show chat messages
+# Browsers/wscat can't send headers on a WebSocket upgrade, so pass the JWT as ?token=
+wscat -c "ws://localhost:8080/ws/chat?room_id=manga_$MANGA_ID&token=$TOKEN"
+# Will show chat messages, plus a system notice for each progress update on this manga
 ```
 
 **Terminal D: Make HTTP update**
 ```bash
-mangahub progress update --manga-id one-piece --chapter 100 --rating 9
+mangahub progress update --manga-id $MANGA_ID --chapter 100 --rating 9
 ```
 
-**Result:** All 5 protocols trigger simultaneously! 🎉
+**Result:** All 5 protocols trigger simultaneously! 🎉 (the gRPC server logs an `AUDIT progress` line)
+
+### 4b. **New chapter → only its readers are notified**
+
+Terminal B above registered anonymously, so it only sees general broadcasts. A logged-in TUI (or `mangahub debug listen`) registers with its token and also gets chapter releases for manga in **its** library:
+
+```bash
+# reader1 has $MANGA_ID in their library (step 4); release its next chapter as admin
+ADMIN_TOKEN=$(curl -s -X POST localhost:8080/auth/login -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}' | jq -r .data.token)
+curl -X POST localhost:8080/admin/manga/$MANGA_ID/chapters -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" -d '{"chapter": 1101}'   # any number above the current total
+```
+
+reader1's TUI shows "📖 … Chapter 1101 released!"; other users see nothing, and the manga's chat room gets a notice.
+
+Same thing from real data: `go run ./cmd/data-cli sync-chapters --link` looks every manga up on MangaDex and releases any newer chapter (add `--dry-run` to preview).
 
 ### 5. CLI Capabilities (2 min)
 

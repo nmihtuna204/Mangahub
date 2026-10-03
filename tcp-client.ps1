@@ -1,4 +1,4 @@
-# Simple TCP Client Test
+﻿# Simple TCP Client Test
 # Use this to manually test the TCP server
 
 $serverHost = "localhost"

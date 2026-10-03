@@ -5,12 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mangahub/internal/cli/apiutil"
 	"net/http"
-	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"golang.org/x/term"
 )
 
 var registerCmd = &cobra.Command{
@@ -30,22 +29,24 @@ var registerCmd = &cobra.Command{
 			fmt.Scanln(&email)
 		}
 
-		fmt.Print("Password: ")
-		password, _ := term.ReadPassword(int(syscall.Stdin))
-		fmt.Println()
+		password, err := readPassword("Password: ")
+		if err != nil {
+			return err
+		}
 
-		fmt.Print("Confirm password: ")
-		confirm, _ := term.ReadPassword(int(syscall.Stdin))
-		fmt.Println()
+		confirm, err := readPassword("Confirm password: ")
+		if err != nil {
+			return err
+		}
 
-		if string(password) != string(confirm) {
+		if password != confirm {
 			return fmt.Errorf("passwords do not match")
 		}
 
 		body := map[string]string{
 			"username": username,
 			"email":    email,
-			"password": string(password),
+			"password": password,
 		}
 
 		jsonBody, _ := json.Marshal(body)
@@ -69,8 +70,7 @@ var registerCmd = &cobra.Command{
 			fmt.Printf("  Email: %s\n", email)
 			fmt.Println("\nNext: mangahub auth login --username " + username)
 		} else {
-			errorData := result["error"].(map[string]interface{})
-			return fmt.Errorf("registration failed: %v", errorData["message"])
+			return fmt.Errorf("registration failed: %s", apiutil.ErrorMessage(result, resp.StatusCode))
 		}
 
 		return nil

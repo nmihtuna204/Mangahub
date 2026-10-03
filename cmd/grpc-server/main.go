@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -59,6 +60,8 @@ func main() {
 	grpcServer := grpc.NewServer(
 		grpc.MaxRecvMsgSize(100*1024*1024), // 100MB
 		grpc.MaxSendMsgSize(100*1024*1024), // 100MB
+		// UpdateProgress needs the caller's JWT (same secret as the HTTP API)
+		grpc.UnaryInterceptor(grpcpkg.AuthInterceptor([]byte(cfg.JWT.Secret), cfg.JWT.Issuer)),
 	)
 	mangaService := grpcpkg.NewMangaServiceServer(db.DB)
 	pb.RegisterMangaServiceServer(grpcServer, mangaService)
@@ -79,6 +82,19 @@ func main() {
 	<-sigCh
 
 	logger.Info("Shutting down gRPC server...")
-	grpcServer.GracefulStop()
+	signal.Stop(sigCh) // a second Ctrl+C force-quits
+
+	// Let in-flight calls finish, but don't wait forever on a stuck client
+	stopped := make(chan struct{})
+	go func() {
+		grpcServer.GracefulStop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		logger.Warn("gRPC calls still running after 10s, closing them")
+		grpcServer.Stop()
+	}
 	logger.Info("gRPC server stopped.")
 }

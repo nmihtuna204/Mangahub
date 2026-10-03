@@ -1,6 +1,6 @@
 server:
   host: 0.0.0.0
-  http_port: 8080
+  port: 8080
   read_timeout: 15s
   write_timeout: 15s
   idle_timeout: 60s
@@ -27,7 +27,7 @@ database:
 jwt:
   secret: your-secret-key-change-in-production
   issuer: mangahub
-  expiration: 86400
+  expiration: 24h   # a bare number is read as nanoseconds
 
 logging:
   level: info

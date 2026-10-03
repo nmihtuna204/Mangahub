@@ -3,14 +3,17 @@ package progress
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"mangahub/internal/auth"
+	"mangahub/internal/protocols"
+	"mangahub/pkg/logger"
 	"mangahub/pkg/models"
 )
 
 type ProtocolBridge interface {
-	BroadcastProgressUpdate(userID, username, mangaID string, chapter int32, status string) error
+	BroadcastProgressUpdate(ev protocols.ProgressEvent) error
 }
 
 type ActivityRecorder interface {
@@ -169,51 +172,54 @@ func (h *Handler) UpdateProgress(c *gin.Context) {
 		return
 	}
 
-	// 🔄 BRIDGE: Broadcast update through all protocols
-	if h.bridge != nil {
-		go func() {
-			_ = h.bridge.BroadcastProgressUpdate(
-				user.ID,
-				user.Username,
-				req.MangaID,
-				int32(req.CurrentChapter),
-				req.Status,
-			)
-		}()
-	}
+	// Everything below runs after the response is sent. The gin.Context and its
+	// request context are recycled once this handler returns, so the goroutine
+	// only captures plain values and uses its own context.
+	userID, username, token := user.ID, user.Username, auth.GetToken(c)
+	chapterSent := req.CurrentChapter != nil && *req.CurrentChapter > 0
+	completedSent := req.Status != nil && *req.Status == "completed"
+	final := *progress // merged state after the update, not the raw request
 
-	// 📝 ACTIVITY: Record chapter read activity
-	if h.activityRecorder != nil && h.mangaSvc != nil && req.CurrentChapter > 0 {
-		go func() {
-			manga, err := h.mangaSvc.GetByID(c.Request.Context(), progress.MangaID)
-			if err == nil {
-				_ = h.activityRecorder.RecordChapterRead(
-					c.Request.Context(),
-					user.ID,
-					user.Username,
-					progress.MangaID,
-					manga.Title,
-					progress.CurrentChapter,
-				)
-			}
-		}()
-	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 
-	// 🎉 ACTIVITY: Record completion if manga is completed
-	if h.activityRecorder != nil && h.mangaSvc != nil && req.Status == "completed" {
-		go func() {
-			manga, err := h.mangaSvc.GetByID(c.Request.Context(), progress.MangaID)
-			if err == nil {
-				_ = h.activityRecorder.RecordMangaCompleted(
-					c.Request.Context(),
-					user.ID,
-					user.Username,
-					progress.MangaID,
-					manga.Title,
-				)
+		mangaTitle := ""
+		if h.mangaSvc != nil {
+			if m, err := h.mangaSvc.GetByID(ctx, final.MangaID); err == nil {
+				mangaTitle = m.Title
 			}
-		}()
-	}
+		}
+
+		// 🔄 BRIDGE: Broadcast update through all protocols
+		if h.bridge != nil {
+			_ = h.bridge.BroadcastProgressUpdate(protocols.ProgressEvent{
+				UserID:     userID,
+				Username:   username,
+				MangaID:    final.MangaID,
+				MangaTitle: mangaTitle,
+				Chapter:    int32(final.CurrentChapter),
+				Status:     final.Status,
+				Token:      token,
+			})
+		}
+
+		if h.activityRecorder == nil || mangaTitle == "" {
+			return
+		}
+		// 📝 ACTIVITY: Record chapter read activity
+		if chapterSent {
+			if err := h.activityRecorder.RecordChapterRead(ctx, userID, username, final.MangaID, mangaTitle, final.CurrentChapter); err != nil {
+				logger.Warnf("record chapter activity: %v", err)
+			}
+		}
+		// 🎉 ACTIVITY: Record completion if manga is completed
+		if completedSent {
+			if err := h.activityRecorder.RecordMangaCompleted(ctx, userID, username, final.MangaID, mangaTitle); err != nil {
+				logger.Warnf("record completion activity: %v", err)
+			}
+		}
+	}()
 
 	c.JSON(http.StatusOK,
 		models.NewSuccessResponse(progress, "reading progress updated"))

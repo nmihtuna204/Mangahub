@@ -1,245 +1,181 @@
-# WebSocket Chat Test Script
-# Tests real-time chat functionality with multiple clients
+﻿# WebSocket Chat Test Script
+# Two users join a room, exchange messages, and the script checks that both
+# see every message, that the room info and saved history are right, and
+# that leaving is announced. Exits 1 if any check fails.
+#
+# Client -> server frames are {"content": "..."} (see docs/API.md); this
+# script used to send {"message": ...}, which the server ignores.
 
 $baseUrl = "http://localhost:8080"
 $wsUrl = "ws://localhost:8080"
+$room = "ps-websocket-test"
+$failures = 0
+
+function Pass($msg) { Write-Host "[PASS] $msg" -ForegroundColor Green }
+function Fail($msg) { Write-Host "[FAIL] $msg" -ForegroundColor Red; $script:failures++ }
+
+function Get-Token($username, $password) {
+    $body = @{ username = $username; password = $password } | ConvertTo-Json
+    return (Invoke-RestMethod -Uri "$baseUrl/auth/login" -Method POST -ContentType "application/json" -Body $body).data.token
+}
+
+function Connect-WebSocket($name, $token) {
+    $ws = New-Object System.Net.WebSockets.ClientWebSocket
+    $ws.Options.SetRequestHeader("Authorization", "Bearer $token")
+    $uri = New-Object System.Uri("$wsUrl/ws/chat?room_id=$room")
+    try {
+        $ws.ConnectAsync($uri, [System.Threading.CancellationToken]::None).Wait()
+    }
+    catch { }
+    if ($ws.State -eq 'Open') { Pass "[$name] connected"; return $ws }
+    Fail "[$name] could not connect (state $($ws.State))"
+    return $null
+}
+
+function Send-Chat($ws, $text) {
+    $json = @{ content = $text } | ConvertTo-Json -Compress
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+    $segment = New-Object System.ArraySegment[byte] -ArgumentList @(, $bytes)
+    $ws.SendAsync($segment, [System.Net.WebSockets.WebSocketMessageType]::Text, $true,
+        [System.Threading.CancellationToken]::None).Wait()
+}
+
+# Reads frames until one matches (type and content), or $timeoutMs passes.
+# Note: in .NET Framework a receive that times out aborts the socket, so only
+# wait for messages that should arrive.
+function Wait-Chat($ws, $type, $content, $timeoutMs = 3000) {
+    $deadline = (Get-Date).AddMilliseconds($timeoutMs)
+    while ($ws.State -eq 'Open' -and (Get-Date) -lt $deadline) {
+        $buffer = New-Object byte[] 16384
+        $text = ""
+        do {
+            $segment = New-Object System.ArraySegment[byte] -ArgumentList @(, $buffer)
+            $left = [int]($deadline - (Get-Date)).TotalMilliseconds
+            if ($left -lt 1) { return $null }
+            $cts = New-Object System.Threading.CancellationTokenSource
+            $cts.CancelAfter($left)
+            try {
+                $task = $ws.ReceiveAsync($segment, $cts.Token)
+                $task.Wait()
+                $result = $task.Result
+            }
+            catch { return $null }
+            if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) { return $null }
+            $text += [System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count)
+        } while (-not $result.EndOfMessage)
+
+        try { $msg = $text | ConvertFrom-Json } catch { continue }
+        if ($msg.type -eq $type -and ($null -eq $content -or $msg.content -eq $content)) { return $msg }
+    }
+    return $null
+}
+
+function Close-WebSocket($ws) {
+    try {
+        $ws.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, "test complete",
+            [System.Threading.CancellationToken]::None).Wait(2000) | Out-Null
+    }
+    catch { }
+    $ws.Dispose()
+}
 
 Write-Host "=== WebSocket Chat System Test ===" -ForegroundColor Cyan
 Write-Host ""
 
-# Test 1: Login to get JWT token
-Write-Host "Test 1: Getting JWT token..." -ForegroundColor Yellow
+# Test 1: Two users log in
+Write-Host "Test 1: Logging in as admin and reader1..." -ForegroundColor Yellow
 try {
-    $loginBody = @{
-        username = "admin"
-        password = "admin123"
-    } | ConvertTo-Json
-    
-    $loginResponse = Invoke-RestMethod -Uri "$baseUrl/auth/login" `
-        -Method POST `
-        -ContentType "application/json" `
-        -Body $loginBody
-    
-    $token = $loginResponse.data.token
-    if ($token) {
-        Write-Host "[PASS] Got JWT token: $($token.Substring(0,20))..." -ForegroundColor Green
-    } else {
-        Write-Host "[FAIL] No token received" -ForegroundColor Red
-        exit 1
-    }
+    $adminToken = Get-Token "admin" "admin123"
+    $readerToken = Get-Token "reader1" "password123"
+    Pass "Got JWT tokens for both users"
 }
 catch {
-    Write-Host "[FAIL] Login failed: $_" -ForegroundColor Red
+    Fail "Login failed: $($_.Exception.Message)"
+    Write-Host "Make sure the API server is running: go run ./cmd/api-server" -ForegroundColor Yellow
     exit 1
 }
-
 Write-Host ""
 
-# Test 2: Check room info endpoint
-Write-Host "Test 2: Checking room info endpoint..." -ForegroundColor Yellow
+# Test 2: The endpoint requires a token
+Write-Host "Test 2: Connecting without a token..." -ForegroundColor Yellow
 try {
-    $roomInfo = Invoke-RestMethod -Uri "$baseUrl/rooms/one-piece" -Method GET
-    Write-Host "[PASS] Room info retrieved: $($roomInfo.count) clients in room" -ForegroundColor Green
-    Write-Host "  Room ID: $($roomInfo.room_id)" -ForegroundColor Gray
+    Invoke-WebRequest -Uri "$baseUrl/ws/chat?room_id=$room" -UseBasicParsing | Out-Null
+    Fail "The chat endpoint accepted a request without a token"
 }
 catch {
-    Write-Host "[FAIL] Room info failed: $_" -ForegroundColor Red
+    if ($_.Exception.Response.StatusCode -eq 401) { Pass "Rejected with 401" }
+    else { Fail "Unexpected error: $($_.Exception.Message)" }
 }
-
 Write-Host ""
 
-# Test 3: WebSocket connection test with .NET WebSocket
-Write-Host "Test 3: Testing WebSocket connections with 2 clients..." -ForegroundColor Yellow
-Write-Host "This will test real-time message broadcasting" -ForegroundColor Cyan
+# Test 3: Both join the room
+Write-Host "Test 3: Two clients join room '$room'..." -ForegroundColor Yellow
+$ws1 = Connect-WebSocket "Client1/admin" $adminToken
+if (-not $ws1) { exit 1 }
+if (Wait-Chat $ws1 "join" "admin joined the chat") { Pass "[Client1] got its own join notice" }
+else { Fail "[Client1] no join notice" }
+
+$ws2 = Connect-WebSocket "Client2/reader1" $readerToken
+if (-not $ws2) { exit 1 }
+if (Wait-Chat $ws2 "join" "reader1 joined the chat") { Pass "[Client2] got its own join notice" }
+else { Fail "[Client2] no join notice" }
+if (Wait-Chat $ws1 "join" "reader1 joined the chat") { Pass "[Client1] saw reader1 join" }
+else { Fail "[Client1] did not see reader1 join" }
 Write-Host ""
 
-# Load WebSocket assembly
-Add-Type -AssemblyName System.Net.WebSockets
-Add-Type -AssemblyName System.Threading
+# Test 4: Messages reach both members
+Write-Host "Test 4: Exchanging messages..." -ForegroundColor Yellow
+$hello1 = "Hello from Client 1! ($(Get-Random))"
+Send-Chat $ws1 $hello1
+foreach ($c in @(@{ Name = "Client1"; Ws = $ws1 }, @{ Name = "Client2"; Ws = $ws2 })) {
+    $m = Wait-Chat $c.Ws "message" $hello1
+    if ($m -and $m.username -eq "admin") { Pass "[$($c.Name)] received admin's message" }
+    else { Fail "[$($c.Name)] did not receive admin's message" }
+}
 
-$script:receivedMessages = @()
+$hello2 = "Hello from Client 2! ($(Get-Random))"
+Send-Chat $ws2 $hello2
+foreach ($c in @(@{ Name = "Client1"; Ws = $ws1 }, @{ Name = "Client2"; Ws = $ws2 })) {
+    $m = Wait-Chat $c.Ws "message" $hello2
+    if ($m -and $m.username -eq "reader1") { Pass "[$($c.Name)] received reader1's message" }
+    else { Fail "[$($c.Name)] did not receive reader1's message" }
+}
+Write-Host ""
 
-function Connect-WebSocket {
-    param(
-        [string]$ClientName,
-        [string]$Token,
-        [string]$RoomId
-    )
-    
+# Test 5: Room info and saved history
+Write-Host "Test 5: Room info and chat history..." -ForegroundColor Yellow
+try {
+    $info = Invoke-RestMethod -Uri "$baseUrl/rooms/$room" -Method GET
+    if ($info.count -eq 2) { Pass "GET /rooms/$room lists 2 connected users ($($info.clients -join ', '))" }
+    else { Fail "GET /rooms/$room count = $($info.count), want 2" }
+}
+catch { Fail "Room info failed: $($_.Exception.Message)" }
+
+$saved = $false
+$deadline = (Get-Date).AddSeconds(3)   # messages are saved asynchronously
+while (-not $saved -and (Get-Date) -lt $deadline) {
     try {
-        $ws = New-Object System.Net.WebSockets.ClientWebSocket
-        $uri = New-Object System.Uri("$wsUrl/ws/chat?room_id=$RoomId")
-        
-        # Add JWT token header
-        $ws.Options.SetRequestHeader("Authorization", "Bearer $Token")
-        
-        Write-Host "[$ClientName] Connecting to WebSocket..." -ForegroundColor Yellow
-        $ct = New-Object System.Threading.CancellationToken
-        $connectTask = $ws.ConnectAsync($uri, $ct)
-        $connectTask.Wait()
-        
-        if ($ws.State -eq 'Open') {
-            Write-Host "[$ClientName] Connected successfully!" -ForegroundColor Green
-            return $ws
-        } else {
-            Write-Host "[$ClientName] Failed to connect. State: $($ws.State)" -ForegroundColor Red
-            return $null
-        }
+        $history = (Invoke-RestMethod -Uri "$baseUrl/rooms/$room/messages?limit=50" -Method GET).data.messages
+        $contents = @($history | ForEach-Object { $_.content })
+        $saved = ($contents -contains $hello1) -and ($contents -contains $hello2)
     }
-    catch {
-        Write-Host "[$ClientName] Connection error: $_" -ForegroundColor Red
-        return $null
-    }
+    catch { }
+    if (-not $saved) { Start-Sleep -Milliseconds 200 }
 }
+if ($saved) { Pass "Both messages are in the saved room history" }
+else { Fail "Messages missing from GET /rooms/$room/messages" }
+Write-Host ""
 
-function Send-WSMessage {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$WebSocket,
-        [string]$Message
-    )
-    
-    try {
-        $jsonMsg = "{`"message`":`"$Message`"}"
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($jsonMsg)
-        $segment = New-Object System.ArraySegment[byte] -ArgumentList @(,$bytes)
-        $ct = New-Object System.Threading.CancellationToken
-        
-        $sendTask = $WebSocket.SendAsync($segment, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $ct)
-        $sendTask.Wait()
-        return $true
-    }
-    catch {
-        Write-Host "Send error: $_" -ForegroundColor Red
-        return $false
-    }
-}
-
-function Receive-WSMessage {
-    param(
-        [System.Net.WebSockets.ClientWebSocket]$WebSocket,
-        [int]$TimeoutMs = 2000
-    )
-    
-    try {
-        $buffer = New-Object byte[] 4096
-        $segment = New-Object System.ArraySegment[byte] -ArgumentList @(,$buffer)
-        $ct = New-Object System.Threading.CancellationTokenSource
-        $ct.CancelAfter($TimeoutMs)
-        
-        $receiveTask = $WebSocket.ReceiveAsync($segment, $ct.Token)
-        
-        if ($receiveTask.Wait($TimeoutMs)) {
-            $result = $receiveTask.Result
-            if ($result.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Text) {
-                $message = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $result.Count)
-                return $message
-            }
-        }
-        return $null
-    }
-    catch {
-        return $null
-    }
-}
-
-# Connect Client 1
-$ws1 = Connect-WebSocket -ClientName "Client1" -Token $token -RoomId "one-piece"
-Start-Sleep -Milliseconds 500
-
-# Connect Client 2
-$ws2 = Connect-WebSocket -ClientName "Client2" -Token $token -RoomId "one-piece"
-Start-Sleep -Milliseconds 500
-
-if ($ws1 -and $ws2) {
-    Write-Host ""
-    Write-Host "Both clients connected. Testing message broadcast..." -ForegroundColor Cyan
-    Write-Host ""
-    
-    # Client 1 receives join notifications
-    Write-Host "[Client1] Listening for join messages..." -ForegroundColor Yellow
-    $msg = Receive-WSMessage -WebSocket $ws1 -TimeoutMs 2000
-    if ($msg) {
-        $msgObj = $msg | ConvertFrom-Json
-        Write-Host "[Client1] Received: [$($msgObj.type)] $($msgObj.message)" -ForegroundColor Green
-    }
-    
-    # Client 2 receives its own join notification
-    $msg = Receive-WSMessage -WebSocket $ws2 -TimeoutMs 2000
-    if ($msg) {
-        $msgObj = $msg | ConvertFrom-Json
-        Write-Host "[Client2] Received: [$($msgObj.type)] $($msgObj.message)" -ForegroundColor Green
-    }
-    
-    Write-Host ""
-    
-    # Client 1 sends a message
-    Write-Host "[Client1] Sending: Hello from Client 1!" -ForegroundColor Cyan
-    Send-WSMessage -WebSocket $ws1 -Message "Hello from Client 1!" | Out-Null
-    Start-Sleep -Milliseconds 500
-    
-    # Both clients should receive it
-    $msg1 = Receive-WSMessage -WebSocket $ws1 -TimeoutMs 2000
-    $msg2 = Receive-WSMessage -WebSocket $ws2 -TimeoutMs 2000
-    
-    if ($msg1) {
-        $msgObj = $msg1 | ConvertFrom-Json
-        Write-Host "[Client1] Received broadcast: $($msgObj.message)" -ForegroundColor Green
-    }
-    
-    if ($msg2) {
-        $msgObj = $msg2 | ConvertFrom-Json
-        Write-Host "[Client2] Received broadcast: $($msgObj.message)" -ForegroundColor Green
-    }
-    
-    Write-Host ""
-    
-    # Client 2 sends a message
-    Write-Host "[Client2] Sending: Hello from Client 2!" -ForegroundColor Cyan
-    Send-WSMessage -WebSocket $ws2 -Message "Hello from Client 2!" | Out-Null
-    Start-Sleep -Milliseconds 500
-    
-    # Both clients should receive it
-    $msg1 = Receive-WSMessage -WebSocket $ws1 -TimeoutMs 2000
-    $msg2 = Receive-WSMessage -WebSocket $ws2 -TimeoutMs 2000
-    
-    if ($msg1) {
-        $msgObj = $msg1 | ConvertFrom-Json
-        Write-Host "[Client1] Received broadcast: $($msgObj.message)" -ForegroundColor Green
-    }
-    
-    if ($msg2) {
-        $msgObj = $msg2 | ConvertFrom-Json
-        Write-Host "[Client2] Received broadcast: $($msgObj.message)" -ForegroundColor Green
-    }
-    
-    Write-Host ""
-    Write-Host "[PASS] WebSocket chat is working! Messages broadcast successfully" -ForegroundColor Green
-    
-    # Close connections
-    Write-Host ""
-    Write-Host "Closing connections..." -ForegroundColor Yellow
-    
-    $ct = New-Object System.Threading.CancellationToken
-    $ws1.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, "Test complete", $ct).Wait()
-    
-    # Client 2 should receive leave notification
-    Start-Sleep -Milliseconds 500
-    $leaveMsg = Receive-WSMessage -WebSocket $ws2 -TimeoutMs 2000
-    if ($leaveMsg) {
-        $msgObj = $leaveMsg | ConvertFrom-Json
-        Write-Host "[Client2] Received: [$($msgObj.type)] $($msgObj.message)" -ForegroundColor Yellow
-    }
-    
-    $ws2.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, "Test complete", $ct).Wait()
-    
-    $ws1.Dispose()
-    $ws2.Dispose()
-}
-else {
-    Write-Host "[FAIL] Could not establish WebSocket connections" -ForegroundColor Red
-    Write-Host "Make sure the API server is running: go run cmd/api-server/main.go" -ForegroundColor Yellow
-}
+# Test 6: Leaving is announced
+Write-Host "Test 6: Client1 leaves..." -ForegroundColor Yellow
+Close-WebSocket $ws1
+if (Wait-Chat $ws2 "leave" "admin left the chat") { Pass "[Client2] saw admin leave" }
+else { Fail "[Client2] no leave notice" }
+Close-WebSocket $ws2
 
 Write-Host ""
-Write-Host "=== Test Complete ===" -ForegroundColor Cyan
-Write-Host "Check the API server logs to see connection and message details" -ForegroundColor Gray
+if ($failures -gt 0) {
+    Write-Host "=== WebSocket test: $failures check(s) FAILED ===" -ForegroundColor Red
+    exit 1
+}
+Write-Host "=== WebSocket test: all checks passed ===" -ForegroundColor Green

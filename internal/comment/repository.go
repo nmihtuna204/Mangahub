@@ -31,7 +31,7 @@ type Repository interface {
 	// GetReplies retrieves replies for a comment
 	GetReplies(ctx context.Context, parentID string) ([]models.CommentWithUser, error)
 
-	// CountByManga counts total comments for a manga/chapter
+	// CountByManga counts top-level comments for a manga/chapter (replies are nested, not paginated)
 	CountByManga(ctx context.Context, mangaID string, chapterNumber *int) (int, error)
 
 	// Update updates a comment's content
@@ -48,6 +48,9 @@ type Repository interface {
 
 	// HasLiked checks if a user has liked a comment
 	HasLiked(ctx context.Context, commentID, userID string) (bool, error)
+
+	// MangaExists reports whether the manga exists
+	MangaExists(ctx context.Context, mangaID string) (bool, error)
 }
 
 type repository struct {
@@ -131,7 +134,7 @@ func (r *repository) GetByManga(ctx context.Context, mangaID string, chapterNumb
 			FROM comments c
 			JOIN users u ON c.user_id = u.id
 			WHERE c.manga_id = ? AND c.chapter_number = ? AND c.parent_id IS NULL AND c.is_deleted = 0
-			ORDER BY c.created_at DESC
+			ORDER BY c.created_at DESC, c.rowid DESC
 			LIMIT ? OFFSET ?`
 		args = []interface{}{mangaID, *chapterNumber, limit, offset}
 	} else {
@@ -143,7 +146,7 @@ func (r *repository) GetByManga(ctx context.Context, mangaID string, chapterNumb
 			FROM comments c
 			JOIN users u ON c.user_id = u.id
 			WHERE c.manga_id = ? AND c.chapter_number IS NULL AND c.parent_id IS NULL AND c.is_deleted = 0
-			ORDER BY c.created_at DESC
+			ORDER BY c.created_at DESC, c.rowid DESC
 			LIMIT ? OFFSET ?`
 		args = []interface{}{mangaID, limit, offset}
 	}
@@ -166,7 +169,7 @@ func (r *repository) GetReplies(ctx context.Context, parentID string) ([]models.
 		FROM comments c
 		JOIN users u ON c.user_id = u.id
 		WHERE c.parent_id = ? AND c.is_deleted = 0
-		ORDER BY c.created_at ASC`, parentID,
+		ORDER BY c.created_at ASC, c.rowid ASC`, parentID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get replies: %w", err)
@@ -205,19 +208,22 @@ func (r *repository) scanComments(rows *sql.Rows) ([]models.CommentWithUser, err
 
 		comments = append(comments, c)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate comments: %w", err)
+	}
 	return comments, nil
 }
 
-// CountByManga counts total comments for a manga/chapter
+// CountByManga counts top-level comments for a manga/chapter (replies are nested, not paginated)
 func (r *repository) CountByManga(ctx context.Context, mangaID string, chapterNumber *int) (int, error) {
 	var query string
 	var args []interface{}
 
 	if chapterNumber != nil {
-		query = "SELECT COUNT(*) FROM comments WHERE manga_id = ? AND chapter_number = ? AND is_deleted = 0"
+		query = "SELECT COUNT(*) FROM comments WHERE manga_id = ? AND chapter_number = ? AND parent_id IS NULL AND is_deleted = 0"
 		args = []interface{}{mangaID, *chapterNumber}
 	} else {
-		query = "SELECT COUNT(*) FROM comments WHERE manga_id = ? AND chapter_number IS NULL AND is_deleted = 0"
+		query = "SELECT COUNT(*) FROM comments WHERE manga_id = ? AND chapter_number IS NULL AND parent_id IS NULL AND is_deleted = 0"
 		args = []interface{}{mangaID}
 	}
 
@@ -336,4 +342,14 @@ func (r *repository) HasLiked(ctx context.Context, commentID, userID string) (bo
 		return false, fmt.Errorf("check like: %w", err)
 	}
 	return count > 0, nil
+}
+
+// MangaExists reports whether the manga exists
+func (r *repository) MangaExists(ctx context.Context, mangaID string) (bool, error) {
+	var one int
+	err := r.db.QueryRowContext(ctx, "SELECT 1 FROM manga WHERE id = ?", mangaID).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
 }

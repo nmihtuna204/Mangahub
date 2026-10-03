@@ -56,14 +56,26 @@ func (s *service) Create(ctx context.Context, userID, mangaID string, req models
 		return nil, models.NewAppError(models.ErrCodeValidation, "comment must be 1-2000 characters", 400, nil)
 	}
 
-	// If replying, verify parent exists
+	if err := s.requireManga(ctx, mangaID); err != nil {
+		return nil, err
+	}
+
+	// If replying, verify parent exists and belongs to the same manga
 	if req.ParentID != "" {
 		parent, err := s.repo.GetByID(ctx, req.ParentID)
 		if err != nil {
 			return nil, models.NewAppError(models.ErrCodeInternal, "failed to verify parent comment", 500, err)
 		}
-		if parent == nil {
+		if parent == nil || parent.IsDeleted {
 			return nil, models.NewAppError(models.ErrCodeNotFound, "parent comment not found", 404, nil)
+		}
+		if parent.MangaID != mangaID {
+			return nil, models.NewAppError(models.ErrCodeValidation, "parent comment belongs to a different manga", 400, nil)
+		}
+		// Threads are one level deep (GetComments only loads direct replies),
+		// so a reply to a reply joins the top-level comment's thread.
+		if parent.ParentID != nil {
+			req.ParentID = *parent.ParentID
 		}
 	}
 
@@ -90,6 +102,10 @@ func (s *service) GetComments(ctx context.Context, mangaID string, chapterNumber
 
 	offset := (page - 1) * pageSize
 
+	if err := s.requireManga(ctx, mangaID); err != nil {
+		return nil, err
+	}
+
 	// Get total count
 	totalCount, err := s.repo.CountByManga(ctx, mangaID, chapterNumber)
 	if err != nil {
@@ -103,7 +119,7 @@ func (s *service) GetComments(ctx context.Context, mangaID string, chapterNumber
 	}
 
 	// Build response with nested replies
-	var commentsWithReplies []models.CommentWithReplies
+	commentsWithReplies := []models.CommentWithReplies{}
 	for _, c := range comments {
 		cwr := models.CommentWithReplies{
 			CommentWithUser: c,
@@ -171,7 +187,7 @@ func (s *service) Like(ctx context.Context, commentID, userID string) error {
 	if err != nil {
 		return models.NewAppError(models.ErrCodeInternal, "failed to get comment", 500, err)
 	}
-	if comment == nil {
+	if comment == nil || comment.IsDeleted {
 		return models.NewAppError(models.ErrCodeNotFound, "comment not found", 404, nil)
 	}
 
@@ -187,6 +203,18 @@ func (s *service) Unlike(ctx context.Context, commentID, userID string) error {
 	err := s.repo.Unlike(ctx, commentID, userID)
 	if err != nil {
 		return models.NewAppError(models.ErrCodeNotFound, "like not found", 404, err)
+	}
+	return nil
+}
+
+// requireManga returns a 404 AppError when the manga does not exist.
+func (s *service) requireManga(ctx context.Context, mangaID string) error {
+	exists, err := s.repo.MangaExists(ctx, mangaID)
+	if err != nil {
+		return models.NewAppError(models.ErrCodeInternal, "failed to look up manga", 500, err)
+	}
+	if !exists {
+		return models.NewAppError(models.ErrCodeNotFound, "manga not found", 404, models.ErrMangaNotFound)
 	}
 	return nil
 }

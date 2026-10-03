@@ -138,50 +138,99 @@ func (c *Client) ClearToken() {
 // HTTP REQUEST METHODS
 // =====================================
 
-// doRequest performs an HTTP request with retry logic
+// doRequest performs an HTTP request. Idempotent methods (GET/PUT/DELETE) are
+// retried on network errors and 5xx responses; POST is sent once so a retry
+// can never create a duplicate comment or rating. The caller must close the
+// returned response body (parseResponse and send do).
 func (c *Client) doRequest(ctx context.Context, method, endpoint string, body interface{}) (*http.Response, error) {
-	var reqBody io.Reader
+	var payload []byte
 	if body != nil {
-		jsonData, err := json.Marshal(body)
-		if err != nil {
+		var err error
+		if payload, err = json.Marshal(body); err != nil {
 			return nil, fmt.Errorf("failed to marshal request body: %w", err)
 		}
-		reqBody = bytes.NewBuffer(jsonData)
 	}
 
-	fullURL := c.baseURL + endpoint
-	req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	attempts := 1
+	if method == http.MethodGet || method == http.MethodPut || method == http.MethodDelete {
+		attempts = DefaultRetries
 	}
 
-	// Set headers
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	// Add auth token if available
-	token := c.GetToken()
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	// Retry logic
-	var resp *http.Response
 	var lastErr error
-	for i := 0; i < DefaultRetries; i++ {
-		resp, lastErr = c.httpClient.Do(req)
-		if lastErr == nil && resp.StatusCode < 500 {
-			return resp, nil
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(RetryDelay * time.Duration(i)):
+			}
 		}
-		if i < DefaultRetries-1 {
-			time.Sleep(RetryDelay * time.Duration(i+1))
-		}
-	}
 
-	if lastErr != nil {
-		return nil, fmt.Errorf("request failed after %d retries: %w", DefaultRetries, lastErr)
+		var reqBody io.Reader
+		if payload != nil {
+			reqBody = bytes.NewReader(payload) // fresh reader per attempt
+		}
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+endpoint, reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		if token := c.GetToken(); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode >= 500 && i < attempts-1 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			continue
+		}
+		return resp, nil
 	}
-	return resp, nil
+	return nil, fmt.Errorf("request failed after %d attempt(s): %w", attempts, lastErr)
+}
+
+// send performs a request whose response body is not needed and turns
+// 4xx/5xx responses into errors.
+func (c *Client) send(ctx context.Context, method, endpoint string, body interface{}) error {
+	resp, err := c.doRequest(ctx, method, endpoint, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		data, _ := io.ReadAll(resp.Body)
+		return apiError(resp.StatusCode, data)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
+// readBody reads a response body, turning 4xx/5xx responses into errors.
+func readBody(resp *http.Response) ([]byte, error) {
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, apiError(resp.StatusCode, data)
+	}
+	return data, nil
+}
+
+// apiError extracts the API's error message from a failed response.
+func apiError(status int, body []byte) error {
+	var errResp models.APIResponse
+	if json.Unmarshal(body, &errResp) == nil && errResp.Error != nil {
+		return fmt.Errorf("%s: %s", errResp.Error.Code, errResp.Error.Message)
+	}
+	return fmt.Errorf("HTTP %d: %s", status, string(body))
 }
 
 // parseResponse parses JSON response into target struct
@@ -195,11 +244,7 @@ func parseResponse[T any](resp *http.Response) (*T, error) {
 
 	// Check for API error response
 	if resp.StatusCode >= 400 {
-		var errResp models.APIResponse
-		if json.Unmarshal(body, &errResp) == nil && errResp.Error != nil {
-			return nil, fmt.Errorf("%s: %s", errResp.Error.Code, errResp.Error.Message)
-		}
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, apiError(resp.StatusCode, body)
 	}
 
 	var result T
@@ -271,17 +316,11 @@ func (c *Client) Register(ctx context.Context, username, email, password string)
 		return nil, err
 	}
 
-	result, err := parseResponse[LoginResponse](resp)
-	if err != nil {
-		return nil, err
+	// Registration returns the new profile but no token; log in to get one
+	if _, err := readBody(resp); err != nil {
+		return nil, fmt.Errorf("registration failed: %w", err)
 	}
-
-	if !result.Success {
-		return nil, fmt.Errorf("registration failed: %s", result.Message)
-	}
-
-	c.SetToken(result.Data.Token)
-	return result.Data.User, nil
+	return c.Login(ctx, username, password)
 }
 
 // GetCurrentUser retrieves the logged-in user's profile
@@ -306,7 +345,7 @@ func (c *Client) GetCurrentUser(ctx context.Context) (*models.User, error) {
 
 // Logout clears the auth token
 func (c *Client) Logout(ctx context.Context) error {
-	_, err := c.doRequest(ctx, "POST", "/auth/logout", nil)
+	err := c.send(ctx, "POST", "/auth/logout", nil)
 	c.ClearToken()
 	return err
 }
@@ -341,8 +380,7 @@ func (c *Client) SearchManga(ctx context.Context, query string, page, pageSize i
 	if query != "" {
 		params.Set("q", query)
 	}
-	params.Set("page", fmt.Sprintf("%d", page))
-	params.Set("page_size", fmt.Sprintf("%d", pageSize))
+	setPage(params, page, pageSize)
 
 	endpoint := "/manga?" + params.Encode()
 	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
@@ -389,6 +427,18 @@ func (c *Client) GetManga(ctx context.Context, mangaID string) (*models.Manga, e
 	return result.Data, nil
 }
 
+// setPage converts a 1-based page number into the API's limit/offset parameters
+func setPage(params url.Values, page, pageSize int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	params.Set("limit", fmt.Sprintf("%d", pageSize))
+	params.Set("offset", fmt.Sprintf("%d", (page-1)*pageSize))
+}
+
 // SearchMangaByGenre searches for manga by genre
 func (c *Client) SearchMangaByGenre(ctx context.Context, genre string, page, pageSize int) ([]models.Manga, int, error) {
 	// Check cache first
@@ -400,9 +450,8 @@ func (c *Client) SearchMangaByGenre(ctx context.Context, genre string, page, pag
 	}
 
 	params := url.Values{}
-	params.Set("q", genre) // The API searches in genres JSON array
-	params.Set("page", fmt.Sprintf("%d", page))
-	params.Set("page_size", fmt.Sprintf("%d", pageSize))
+	params.Set("genre", genre) // matches the genre's name or slug
+	setPage(params, page, pageSize)
 
 	endpoint := "/manga?" + params.Encode()
 	resp, err := c.doRequest(ctx, "GET", endpoint, nil)
@@ -466,7 +515,7 @@ func (c *Client) GetLibrary(ctx context.Context) ([]LibraryEntry, error) {
 
 // AddToLibrary adds a manga to user's library
 func (c *Client) AddToLibrary(ctx context.Context, mangaID string) error {
-	_, err := c.doRequest(ctx, "POST", "/users/library", map[string]interface{}{
+	err := c.send(ctx, "POST", "/users/library", map[string]interface{}{
 		"manga_id":        mangaID,
 		"status":          "plan_to_read",
 		"current_chapter": 0,
@@ -477,13 +526,14 @@ func (c *Client) AddToLibrary(ctx context.Context, mangaID string) error {
 
 // RemoveFromLibrary removes a manga from user's library
 func (c *Client) RemoveFromLibrary(ctx context.Context, mangaID string) error {
-	_, err := c.doRequest(ctx, "DELETE", "/users/library/"+mangaID, nil)
+	err := c.send(ctx, "DELETE", "/users/library/"+mangaID, nil)
 	c.cache.Delete("library") // Invalidate cache
 	return err
 }
 
 // UpdateProgress updates reading progress with chapter, status, and favorite flag
-func (c *Client) UpdateProgress(ctx context.Context, mangaID string, chapter int, status string, isFavorite bool) error {
+// A nil isFavorite leaves the favorite flag unchanged.
+func (c *Client) UpdateProgress(ctx context.Context, mangaID string, chapter int, status string, isFavorite *bool) error {
 	payload := map[string]interface{}{
 		"manga_id":        mangaID,
 		"current_chapter": chapter,
@@ -491,9 +541,11 @@ func (c *Client) UpdateProgress(ctx context.Context, mangaID string, chapter int
 	if status != "" {
 		payload["status"] = status
 	}
-	payload["is_favorite"] = isFavorite
+	if isFavorite != nil {
+		payload["is_favorite"] = *isFavorite
+	}
 
-	_, err := c.doRequest(ctx, "PUT", "/users/progress", payload)
+	err := c.send(ctx, "PUT", "/users/progress", payload)
 	c.cache.Delete("library") // Invalidate cache
 	return err
 }
@@ -504,8 +556,8 @@ func (c *Client) UpdateProgress(ctx context.Context, mangaID string, chapter int
 
 // RatingSummaryResponse from ratings API
 type RatingSummaryResponse struct {
-	Success bool                  `json:"success"`
-	Data    *models.RatingSummary `json:"data"`
+	Success bool                        `json:"success"`
+	Data    models.MangaRatingsResponse `json:"data"`
 }
 
 // GetRatings retrieves rating summary for a manga
@@ -527,13 +579,14 @@ func (c *Client) GetRatings(ctx context.Context, mangaID string) (*models.Rating
 		return nil, err
 	}
 
-	c.cache.Set(cacheKey, result.Data, CacheDuration)
-	return result.Data, nil
+	summary := &result.Data.Summary
+	c.cache.Set(cacheKey, summary, CacheDuration)
+	return summary, nil
 }
 
 // SubmitRating submits/updates a rating
 func (c *Client) SubmitRating(ctx context.Context, mangaID string, rating int, review string) error {
-	_, err := c.doRequest(ctx, "POST", "/manga/"+mangaID+"/ratings", map[string]interface{}{
+	err := c.send(ctx, "POST", "/manga/"+mangaID+"/ratings", map[string]interface{}{
 		"rating":      rating, // 1-10 integer scale
 		"review_text": review,
 	})
@@ -583,8 +636,10 @@ func (c *Client) GetTrending(ctx context.Context, limit int, days int) ([]Trendi
 	}
 
 	// Parse as raw JSON first
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readBody(resp)
+	if err != nil {
+		return nil, err
+	}
 
 	var rawResp struct {
 		Success bool `json:"success"`
@@ -617,8 +672,10 @@ func (c *Client) GetTopRated(ctx context.Context, limit int) ([]TrendingEntry, e
 		return nil, err
 	}
 
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readBody(resp)
+	if err != nil {
+		return nil, err
+	}
 
 	var rawResp struct {
 		Success bool `json:"success"`
@@ -675,20 +732,55 @@ func (c *Client) PostComment(ctx context.Context, mangaID, content string, chapt
 		payload["parent_id"] = *parentID
 	}
 
-	_, err := c.doRequest(ctx, "POST", "/manga/"+mangaID+"/comments", payload)
+	err := c.send(ctx, "POST", "/manga/"+mangaID+"/comments", payload)
 	return err
 }
 
 // LikeComment likes a comment
 func (c *Client) LikeComment(ctx context.Context, commentID string) error {
-	_, err := c.doRequest(ctx, "POST", "/comments/"+commentID+"/like", nil)
+	err := c.send(ctx, "POST", "/comments/"+commentID+"/like", nil)
 	return err
 }
 
 // UnlikeComment unlikes a comment
 func (c *Client) UnlikeComment(ctx context.Context, commentID string) error {
-	_, err := c.doRequest(ctx, "DELETE", "/comments/"+commentID+"/like", nil)
+	err := c.send(ctx, "DELETE", "/comments/"+commentID+"/like", nil)
 	return err
+}
+
+// =====================================
+// CHAT HISTORY API
+// =====================================
+
+// ChatHistoryMessage is a saved chat message from GET /rooms/:room_id/messages
+type ChatHistoryMessage struct {
+	ID        string    `json:"id"`
+	RoomID    string    `json:"room_id"`
+	UserID    string    `json:"user_id"`
+	Username  string    `json:"username"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// GetRoomMessages returns the most recent saved messages of a chat room, oldest first
+func (c *Client) GetRoomMessages(ctx context.Context, roomID string, limit int) ([]ChatHistoryMessage, error) {
+	params := url.Values{}
+	params.Set("limit", fmt.Sprintf("%d", limit))
+	resp, err := c.doRequest(ctx, "GET", "/rooms/"+url.PathEscape(roomID)+"/messages?"+params.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	type historyResponse struct {
+		Data struct {
+			Messages []ChatHistoryMessage `json:"messages"`
+		} `json:"data"`
+	}
+	result, err := parseResponse[historyResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+	return result.Data.Messages, nil
 }
 
 // =====================================
@@ -697,12 +789,7 @@ func (c *Client) UnlikeComment(ctx context.Context, commentID string) error {
 
 // HealthCheck verifies server connectivity
 func (c *Client) HealthCheck(ctx context.Context) bool {
-	resp, err := c.doRequest(ctx, "GET", "/health", nil)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	return c.send(ctx, "GET", "/health", nil) == nil
 }
 
 // =====================================
@@ -740,8 +827,10 @@ func (c *Client) GetActivities(ctx context.Context, limit int) ([]ActivityEntry,
 		return nil, err
 	}
 
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := readBody(resp)
+	if err != nil {
+		return nil, err
+	}
 
 	// API returns {activities: [], total, limit, offset} NOT wrapped in data
 	var rawResp struct {
@@ -762,7 +851,7 @@ func (c *Client) GetActivities(ctx context.Context, limit int) ([]ActivityEntry,
 
 // UpdateLibraryStatus updates the reading status of a manga in library
 func (c *Client) UpdateLibraryStatus(ctx context.Context, mangaID string, status string) error {
-	_, err := c.doRequest(ctx, "PUT", "/users/progress", map[string]interface{}{
+	err := c.send(ctx, "PUT", "/users/progress", map[string]interface{}{
 		"manga_id": mangaID,
 		"status":   status,
 	})
@@ -772,7 +861,7 @@ func (c *Client) UpdateLibraryStatus(ctx context.Context, mangaID string, status
 
 // UpdateLibraryProgress updates both status and chapter progress
 func (c *Client) UpdateLibraryProgress(ctx context.Context, mangaID string, status string, chapter int) error {
-	_, err := c.doRequest(ctx, "PUT", "/users/progress", map[string]interface{}{
+	err := c.send(ctx, "PUT", "/users/progress", map[string]interface{}{
 		"manga_id":        mangaID,
 		"status":          status,
 		"current_chapter": chapter,
@@ -783,7 +872,7 @@ func (c *Client) UpdateLibraryProgress(ctx context.Context, mangaID string, stat
 
 // ToggleFavorite toggles favorite status for a manga
 func (c *Client) ToggleFavorite(ctx context.Context, mangaID string, isFavorite bool) error {
-	_, err := c.doRequest(ctx, "PUT", "/users/progress", map[string]interface{}{
+	err := c.send(ctx, "PUT", "/users/progress", map[string]interface{}{
 		"manga_id":    mangaID,
 		"is_favorite": isFavorite,
 	})

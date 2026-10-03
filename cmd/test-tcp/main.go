@@ -1,5 +1,10 @@
 // Package main - TCP Protocol Manual Test
 // Kết nối đến TCP server và gửi/nhận messages để test sync functionality
+//
+// Sends one progress update and prints every update the server relays (it
+// relays to all clients, the sender included). With -listen it waits at most
+// that long for its own update to come back and exits 1 if it doesn't, so
+// scripts can use it.
 package main
 
 import (
@@ -8,6 +13,8 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"os"
+	"strconv"
 	"time"
 )
 
@@ -24,44 +31,43 @@ func main() {
 	userID := flag.String("user", "test-user", "User ID")
 	mangaID := flag.String("manga", "one-piece", "Manga ID")
 	chapter := flag.Int("chapter", 100, "Chapter number")
+	listen := flag.Duration("listen", 0, "Wait at most this long for the update to come back, then exit (1 if it didn't); 0 = listen until Ctrl+C")
 	flag.Parse()
 
-	addr := fmt.Sprintf("%s:%d", *host, *port)
+	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
 	fmt.Printf("🔗 Connecting to TCP server at %s...\n", addr)
 
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
-		fmt.Printf("❌ Connection failed: %v\n", err)
-		return
+		fail("Connection failed: %v", err)
 	}
 	defer conn.Close()
 
 	fmt.Println("✅ Connected!")
 
-	// Send test message
 	update := ProgressUpdate{
 		UserID:    *userID,
 		MangaID:   *mangaID,
 		Chapter:   *chapter,
 		Timestamp: time.Now().Unix(),
 	}
-
 	data, _ := json.Marshal(update)
 	fmt.Printf("\n📤 Sending message:\n%s\n", string(data))
+	if _, err := conn.Write(append(data, '\n')); err != nil {
+		fail("Send failed: %v", err)
+	}
+	fmt.Println("✅ Message sent!")
 
-	_, err = conn.Write(append(data, '\n'))
-	if err != nil {
-		fmt.Printf("❌ Send failed: %v\n", err)
-		return
+	if *listen > 0 {
+		fmt.Printf("👂 Waiting up to %v for the server to relay it...\n", *listen)
+		conn.SetReadDeadline(time.Now().Add(*listen))
+	} else {
+		fmt.Println("👂 Listening for relayed updates (Ctrl+C to quit)...")
 	}
 
-	fmt.Println("✅ Message sent!\n")
-
-	// Listen for responses (server may broadcast this to other clients)
-	fmt.Println("👂 Listening for responses (Ctrl+C to quit)...")
-
+	gotOwn := false
 	scanner := bufio.NewScanner(conn)
-	for scanner.Scan() {
+	for (!gotOwn || *listen == 0) && scanner.Scan() {
 		line := scanner.Bytes()
 		fmt.Printf("\n📥 Received: %s\n", string(line))
 
@@ -71,10 +77,25 @@ func main() {
 			fmt.Printf("   Manga: %s\n", recv.MangaID)
 			fmt.Printf("   Chapter: %d\n", recv.Chapter)
 			fmt.Printf("   Time: %v\n", time.Unix(recv.Timestamp, 0))
+			if recv == update {
+				gotOwn = true
+			}
 		}
 	}
 
-	if scanner.Err() != nil {
-		fmt.Printf("❌ Receive error: %v\n", scanner.Err())
+	if *listen > 0 {
+		if !gotOwn {
+			fail("The update was not relayed back within %v (%v)", *listen, scanner.Err())
+		}
+		fmt.Println("\n✅ The server relayed the update")
+		return
 	}
+	if scanner.Err() != nil {
+		fail("Receive error: %v", scanner.Err())
+	}
+}
+
+func fail(format string, args ...interface{}) {
+	fmt.Printf("❌ "+format+"\n", args...)
+	os.Exit(1)
 }

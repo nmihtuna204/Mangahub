@@ -1,0 +1,28 @@
+# Image with only the tcp-server. The usual way to run MangaHub in Docker is
+# docker-compose.yml (one image, see ../Dockerfile); this builds one service.
+#   docker build -t mangahub-tcp -f docker/<this file> .
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Pure-Go SQLite driver: no C toolchain needed
+RUN CGO_ENABLED=0 GOOS=linux go build -o tcp-server ./cmd/tcp-server
+
+FROM alpine:latest
+
+RUN apk add --no-cache ca-certificates
+
+WORKDIR /app
+
+COPY --from=builder /build/tcp-server .
+COPY configs/ ./configs/
+RUN mkdir -p /app/data
+
+EXPOSE 9090
+
+CMD ["./tcp-server"]

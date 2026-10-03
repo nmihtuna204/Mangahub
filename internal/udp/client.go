@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"mangahub/pkg/logger"
@@ -12,6 +13,7 @@ import (
 // Client represents a UDP notification client
 type Client struct {
 	ServerAddr     string
+	Token          string // optional JWT: also receive notifications for this user
 	conn           *net.UDPConn
 	OnNotification func(Notification)
 	stop           chan struct{}
@@ -39,7 +41,11 @@ func (c *Client) Connect() error {
 	c.conn = conn
 
 	// Send registration message
-	_, err = c.conn.Write([]byte("REGISTER"))
+	register := "REGISTER"
+	if c.Token != "" {
+		register += " " + c.Token
+	}
+	_, err = c.conn.Write([]byte(register))
 	if err != nil {
 		return fmt.Errorf("send register: %w", err)
 	}
@@ -61,6 +67,7 @@ func (c *Client) Connect() error {
 
 	// Start listening for notifications
 	go c.listen()
+	go c.heartbeat(register)
 
 	return nil
 }
@@ -83,6 +90,14 @@ func (c *Client) listen() {
 				return
 			}
 
+			// Replies to the heartbeat REGISTER aren't notifications
+			if s := string(buffer[:n]); s == "REGISTERED" || s == "UNREGISTERED" {
+				continue
+			} else if strings.HasPrefix(s, "ERROR") {
+				logger.Warnf("UDP notification server: %s", s)
+				continue
+			}
+
 			var notification Notification
 			if err := json.Unmarshal(buffer[:n], &notification); err != nil {
 				logger.Warnf("failed to unmarshal notification: %v", err)
@@ -92,6 +107,21 @@ func (c *Client) listen() {
 			if c.OnNotification != nil {
 				c.OnNotification(notification)
 			}
+		}
+	}
+}
+
+// heartbeat re-sends the registration every HeartbeatInterval so the server
+// doesn't expire this subscriber (and re-adds it after a server restart).
+func (c *Client) heartbeat(register string) {
+	ticker := time.NewTicker(HeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			_, _ = c.conn.Write([]byte(register))
+		case <-c.stop:
+			return
 		}
 	}
 }

@@ -10,17 +10,22 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"mangahub/internal/auth"
 	"mangahub/internal/udp"
 	"mangahub/pkg/config"
 	"mangahub/pkg/logger"
 )
 
 func main() {
+	demo := flag.Bool("demo", false, "broadcast a sample chapter notification every 10s")
+	flag.Parse()
+
 	cfg, err := config.Load("./configs/development.yaml")
 	if err != nil {
 		panic(err)
@@ -33,6 +38,16 @@ func main() {
 	})
 
 	server := udp.NewNotificationServer(cfg.UDP.Host, cfg.UDP.Port)
+	// "REGISTER <jwt>" ties a subscriber to its user, so chapter releases
+	// reach only the readers of that manga
+	server.SetTokenVerifier(func(token string) (string, error) {
+		user, err := auth.VerifyToken(token, []byte(cfg.JWT.Secret), cfg.JWT.Issuer)
+		if err != nil {
+			return "", err
+		}
+		return user.ID, nil
+	})
+	server.SetSubscriberTTL(cfg.UDP.SubscriberTTL)
 
 	// Start server in background
 	go func() {
@@ -43,15 +58,15 @@ func main() {
 
 	logger.Infof("UDP Notification Server started on %s:%d", cfg.UDP.Host, cfg.UDP.Port)
 
-	// Demo: Send test notifications periodically
-	go func() {
-		time.Sleep(5 * time.Second) // Wait for clients to register
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
+	// Demo: Send test notifications periodically (opt-in; real notifications
+	// come from the API server's protocol bridge on every progress update)
+	if *demo {
+		go func() {
+			time.Sleep(5 * time.Second) // Wait for clients to register
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
 
-		for {
-			select {
-			case <-ticker.C:
+			for range ticker.C {
 				notification := udp.NewChapterNotification(
 					"one-piece",
 					"New chapter released: One Piece Chapter 1100!",
@@ -59,8 +74,8 @@ func main() {
 				server.SendNotification(notification)
 				logger.Info("Demo notification sent")
 			}
-		}
-	}()
+		}()
+	}
 
 	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)

@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
@@ -107,16 +108,17 @@ func (s *service) Login(ctx context.Context, req models.LoginRequest) (*models.L
 		hash         string
 		displayName  string
 		role         string
+		isActive     bool
 		createdAt    time.Time
 		lastLoginPtr *time.Time
 	)
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, username, email, password_hash, display_name, role, created_at, last_login_at
+		SELECT id, username, email, password_hash, display_name, role, is_active, created_at, last_login_at
 		FROM users
 		WHERE username = ? OR email = ?`,
 		req.Username, req.Username,
-	).Scan(&id, &username, &email, &hash, &displayName, &role, &createdAt, &lastLoginPtr)
+	).Scan(&id, &username, &email, &hash, &displayName, &role, &isActive, &createdAt, &lastLoginPtr)
 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -127,6 +129,9 @@ func (s *service) Login(ctx context.Context, req models.LoginRequest) (*models.L
 
 	if !utils.CheckPassword(req.Password, hash) {
 		return nil, models.NewAppError(models.ErrCodeUnauthorized, "invalid credentials", 401, models.ErrInvalidCredentials)
+	}
+	if !isActive {
+		return nil, models.NewAppError(models.ErrCodeForbidden, "account is disabled", 403, models.ErrForbidden)
 	}
 
 	now := time.Now()
@@ -169,22 +174,33 @@ func (s *service) Login(ctx context.Context, req models.LoginRequest) (*models.L
 }
 
 func (s *service) ParseToken(tokenStr string) (*models.UserProfile, error) {
+	return VerifyToken(tokenStr, s.jwtSecret, s.issuer)
+}
+
+// VerifyToken checks a token's signature (HS256 only), expiry and issuer and
+// returns the identity it carries. It needs no database, so other servers
+// (e.g. the UDP server, to identify subscribers) can use it with the shared secret.
+func VerifyToken(tokenStr string, secret []byte, issuer string) (*models.UserProfile, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &jwtClaims{}, func(t *jwt.Token) (interface{}, error) {
-		return s.jwtSecret, nil
+		// Only accept the algorithm we sign with (blocks "alg" substitution attacks)
+		if t.Method != jwt.SigningMethodHS256 {
+			return nil, fmt.Errorf("unexpected signing method %v", t.Header["alg"])
+		}
+		return secret, nil
 	})
 	if err != nil || !token.Valid {
 		return nil, models.NewAppError(models.ErrCodeUnauthorized, "invalid token", 401, models.ErrInvalidToken)
 	}
 
 	claims, ok := token.Claims.(*jwtClaims)
-	if !ok {
+	if !ok || !claims.VerifyIssuer(issuer, true) {
 		return nil, models.NewAppError(models.ErrCodeUnauthorized, "invalid token claims", 401, models.ErrInvalidToken)
 	}
 
 	return &models.UserProfile{
 		ID:       claims.UserID,
 		Username: claims.Username,
-		// role can be added if you include it in UserProfile later
+		Role:     claims.Role,
 	}, nil
 }
 
@@ -202,7 +218,7 @@ func (s *service) RefreshToken(ctx context.Context, userID string) (string, erro
 	claims := jwtClaims{
 		UserID:   user.ID,
 		Username: user.Username,
-		Role:     "user", // Default role
+		Role:     user.Role,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   user.ID,
 			Issuer:    s.issuer,
@@ -226,16 +242,17 @@ func (s *service) GetUserByID(ctx context.Context, userID string) (*models.UserP
 		id          string
 		username    string
 		displayName string
+		role        string
 		createdAt   time.Time
 		lastLogin   *time.Time
 	)
 
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, username, display_name, created_at, last_login_at
+		SELECT id, username, display_name, role, created_at, last_login_at
 		FROM users
 		WHERE id = ? AND is_active = 1`,
 		userID,
-	).Scan(&id, &username, &displayName, &createdAt, &lastLogin)
+	).Scan(&id, &username, &displayName, &role, &createdAt, &lastLogin)
 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -249,6 +266,7 @@ func (s *service) GetUserByID(ctx context.Context, userID string) (*models.UserP
 		Username:    username,
 		DisplayName: displayName,
 		AvatarURL:   "", // Avatar URL can be generated from external service (Gravatar, etc.)
+		Role:        role,
 		CreatedAt:   createdAt,
 		LastLoginAt: lastLogin,
 	}, nil

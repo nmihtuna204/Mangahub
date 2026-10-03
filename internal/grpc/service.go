@@ -12,21 +12,34 @@ package grpc
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	pb "mangahub/internal/grpc/pb"
+	"mangahub/internal/manga"
 	"mangahub/pkg/logger"
 	"mangahub/pkg/models"
 )
 
+var validStatuses = map[string]bool{
+	"plan_to_read": true, "reading": true, "completed": true, "on_hold": true, "dropped": true,
+}
+
 type MangaServiceServer struct {
 	pb.UnimplementedMangaServiceServer
-	db *sql.DB
+	db    *sql.DB
+	manga manga.Repository
 }
 
 func NewMangaServiceServer(db *sql.DB) *MangaServiceServer {
 	return &MangaServiceServer{
-		db: db,
+		db:    db,
+		manga: manga.NewRepository(db),
 	}
 }
 
@@ -35,62 +48,21 @@ func (s *MangaServiceServer) GetManga(ctx context.Context, req *pb.GetMangaReque
 	// Protocol trace logging
 	logger.GRPC("GetManga", "manga_id="+req.MangaId, 0)
 
-	var manga models.Manga
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, title, author, artist, description, cover_url, status, type,
-		       total_chapters, average_rating, rating_count, year
-		FROM manga WHERE id = ?`, req.MangaId)
+	if req.MangaId == "" {
+		return nil, status.Error(codes.InvalidArgument, "manga_id is required")
+	}
 
-	if err := row.Scan(
-		&manga.ID, &manga.Title, &manga.Author, &manga.Artist, &manga.Description,
-		&manga.CoverURL, &manga.Status, &manga.Type,
-		&manga.TotalChapters, &manga.AverageRating, &manga.RatingCount, &manga.Year,
-	); err != nil {
-		if err == sql.ErrNoRows {
+	m, err := s.manga.GetByID(ctx, req.MangaId)
+	if err != nil {
+		var appErr *models.AppError
+		if errors.As(err, &appErr) && appErr.StatusCode == 404 {
 			logger.Warnf("gRPC: Manga not found: %s", req.MangaId)
-			return nil, fmt.Errorf("manga not found: %s", req.MangaId)
+			return nil, status.Errorf(codes.NotFound, "manga not found: %s", req.MangaId)
 		}
 		logger.Errorf("gRPC: Database error: %v", err)
-		return nil, err
+		return nil, status.Error(codes.Internal, "failed to load manga")
 	}
-
-	// Load genres via separate query (limit to 20 for safety)
-	var genres []*pb.Genre
-	genreRows, err := s.db.QueryContext(ctx, `
-		SELECT g.id, g.name FROM genres g
-		INNER JOIN manga_genres mg ON g.id = mg.genre_id
-		WHERE mg.manga_id = ?
-		LIMIT 20`, req.MangaId)
-	if err == nil {
-		defer genreRows.Close()
-		for genreRows.Next() {
-			var gid, gname string
-			if err := genreRows.Scan(&gid, &gname); err == nil {
-				genres = append(genres, &pb.Genre{
-					Id:   gid,
-					Name: gname,
-				})
-			}
-		}
-	}
-
-	resp := &pb.MangaResponse{
-		Id:            manga.ID,
-		Title:         manga.Title,
-		Author:        manga.Author,
-		Artist:        manga.Artist,
-		Description:   manga.Description,
-		CoverUrl:      manga.CoverURL,
-		Status:        manga.Status,
-		Type:          manga.Type,
-		TotalChapters: int32(manga.TotalChapters),
-		AverageRating: manga.AverageRating,
-		RatingCount:   int32(manga.RatingCount),
-		Year:          int32(manga.Year),
-		Genres:        genres,
-	}
-
-	return resp, nil
+	return toPB(*m), nil
 }
 
 // SearchManga searches for manga with filters
@@ -98,116 +70,58 @@ func (s *MangaServiceServer) SearchManga(ctx context.Context, req *pb.SearchRequ
 	// Protocol trace logging
 	logger.GRPC("SearchManga", fmt.Sprintf("query=%s limit=%d offset=%d", req.Query, req.Limit, req.Offset), 0)
 
-	if req.Limit <= 0 {
-		req.Limit = 20
+	search := models.MangaSearchRequest{
+		Query:  req.Query,
+		Genres: req.Genres,
+		Status: req.Status,
+		Limit:  int(req.Limit),
+		Offset: int(req.Offset),
 	}
-	if req.Limit > 100 {
-		req.Limit = 100
-	}
-
-	// Build WHERE clause
-	conditions := []string{"1=1"}
-	args := []interface{}{}
-
-	if req.Query != "" {
-		conditions = append(conditions, "(title LIKE ? OR author LIKE ?)")
-		q := "%" + req.Query + "%"
-		args = append(args, q, q)
+	if err := models.ValidateMangaSearch(&search); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	if req.Status != "" {
-		conditions = append(conditions, "status = ?")
-		args = append(args, req.Status)
-	}
-
-	where := ""
-	for i, cond := range conditions {
-		if i == 0 {
-			where = cond
-		} else {
-			where += " AND " + cond
-		}
-	}
-
-	// Get total count
-	var total int32
-	countSQL := "SELECT COUNT(*) FROM manga WHERE " + where
-	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
-		logger.Errorf("gRPC: Count query error: %v", err)
-		return nil, err
-	}
-
-	// Get paginated results
-	listSQL := fmt.Sprintf(`
-		SELECT id, title, author, artist, description, cover_url, status, type,
-		       total_chapters, average_rating, rating_count, year
-		FROM manga
-		WHERE %s
-		ORDER BY title ASC
-		LIMIT ? OFFSET ?`, where)
-
-	argsWithPaging := append(args, req.Limit, req.Offset)
-
-	rows, err := s.db.QueryContext(ctx, listSQL, argsWithPaging...)
+	list, total, err := s.manga.List(ctx, search)
 	if err != nil {
-		logger.Errorf("gRPC: Query error: %v", err)
-		return nil, err
+		logger.Errorf("gRPC: Search error: %v", err)
+		return nil, status.Error(codes.Internal, "search failed")
 	}
-	defer rows.Close()
 
-	var mangaList []*pb.MangaResponse
-	for rows.Next() {
-		var manga models.Manga
-		if err := rows.Scan(
-			&manga.ID, &manga.Title, &manga.Author, &manga.Artist, &manga.Description,
-			&manga.CoverURL, &manga.Status, &manga.Type,
-			&manga.TotalChapters, &manga.AverageRating, &manga.RatingCount, &manga.Year,
-		); err != nil {
-			logger.Errorf("gRPC: Scan error: %v", err)
-			return nil, err
-		}
-
-		// Load genres for each manga
-		var genres []*pb.Genre
-		genreRows, err := s.db.QueryContext(ctx, `
-			SELECT g.id, g.name, g.slug FROM genres g
-			INNER JOIN manga_genres mg ON g.id = mg.genre_id
-			WHERE mg.manga_id = ?`, manga.ID)
-		if err == nil {
-			defer genreRows.Close()
-			for genreRows.Next() {
-				var genre pb.Genre
-				if err := genreRows.Scan(&genre.Id, &genre.Name, &genre.Slug); err == nil {
-					genres = append(genres, &genre)
-				}
-			}
-		}
-
-		mangaList = append(mangaList, &pb.MangaResponse{
-			Id:            manga.ID,
-			Title:         manga.Title,
-			Author:        manga.Author,
-			Artist:        manga.Artist,
-			Description:   manga.Description,
-			CoverUrl:      manga.CoverURL,
-			Status:        manga.Status,
-			Type:          manga.Type,
-			TotalChapters: int32(manga.TotalChapters),
-			AverageRating: manga.AverageRating,
-			RatingCount:   int32(manga.RatingCount),
-			Year:          int32(manga.Year),
-			Genres:        genres,
-		})
+	mangaList := make([]*pb.MangaResponse, 0, len(list))
+	for _, m := range list {
+		mangaList = append(mangaList, toPB(m))
 	}
 
 	logger.Infof("gRPC: SearchManga returned %d results", len(mangaList))
 
 	return &pb.SearchResponse{
 		Manga:  mangaList,
-		Total:  total,
-		Limit:  req.Limit,
-		Offset: req.Offset,
+		Total:  int32(total),
+		Limit:  int32(search.Limit),
+		Offset: int32(search.Offset),
 	}, nil
+}
+
+func toPB(m models.Manga) *pb.MangaResponse {
+	genres := make([]*pb.Genre, 0, len(m.Genres))
+	for _, g := range m.Genres {
+		genres = append(genres, &pb.Genre{Id: g.ID, Name: g.Name, Slug: g.Slug})
+	}
+	return &pb.MangaResponse{
+		Id:            m.ID,
+		Title:         m.Title,
+		Author:        m.Author,
+		Artist:        m.Artist,
+		Description:   m.Description,
+		CoverUrl:      m.CoverURL,
+		Status:        m.Status,
+		Type:          m.Type,
+		TotalChapters: int32(m.TotalChapters),
+		AverageRating: m.AverageRating,
+		RatingCount:   int32(m.RatingCount),
+		Year:          int32(m.Year),
+		Genres:        genres,
+	}
 }
 
 // UpdateProgress updates user reading progress
@@ -215,65 +129,134 @@ func (s *MangaServiceServer) UpdateProgress(ctx context.Context, req *pb.Progres
 	logger.Infof("gRPC: UpdateProgress called for user=%s, manga=%s, chapter=%d",
 		req.UserId, req.MangaId, req.CurrentChapter)
 
-	// Check if user_id is a username and convert to UUID
-	userID := req.UserId
-	var userUUID string
-	err := s.db.QueryRowContext(ctx, "SELECT id FROM users WHERE id = ? OR username = ?", req.UserId, req.UserId).Scan(&userUUID)
-	if err != nil {
-		logger.Errorf("gRPC: User not found: %v", err)
-		return nil, fmt.Errorf("user not found: %s", req.UserId)
+	if req.UserId == "" || req.MangaId == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id and manga_id are required")
 	}
-	userID = userUUID
-
-	// Check if progress record exists
-	var existingID string
-	err = s.db.QueryRowContext(ctx,
-		"SELECT id FROM reading_progress WHERE user_id = ? AND manga_id = ?",
-		userID, req.MangaId,
-	).Scan(&existingID)
-
-	if err != nil && err != sql.ErrNoRows {
-		logger.Errorf("gRPC: Query error: %v", err)
-		return nil, err
+	if req.CurrentChapter < 0 {
+		return nil, status.Error(codes.InvalidArgument, "current_chapter must be >= 0")
+	}
+	if req.Status == "" {
+		req.Status = "reading"
+	}
+	if !validStatuses[req.Status] {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid status %q", req.Status)
 	}
 
+	// Accept either the user's UUID or username
+	var userID string
+	err := s.db.QueryRowContext(ctx, "SELECT id FROM users WHERE id = ? OR username = ?", req.UserId, req.UserId).Scan(&userID)
 	if err == sql.ErrNoRows {
-		// Insert new progress record
-		newID := fmt.Sprintf("%s-%s", userID, req.MangaId)
-		_, err = s.db.ExecContext(ctx, `
-			INSERT INTO reading_progress
-			(id, user_id, manga_id, current_chapter, status, last_read_at, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))`,
-			newID, userID, req.MangaId, req.CurrentChapter, req.Status,
-		)
-		if err != nil {
-			logger.Errorf("gRPC: Insert error: %v", err)
-			return nil, err
-		}
-		existingID = newID
-	} else {
-		// Update existing progress
-		_, err = s.db.ExecContext(ctx, `
-			UPDATE reading_progress
-			SET current_chapter = ?, status = ?, last_read_at = datetime('now'), 
-			    updated_at = datetime('now')
-			WHERE id = ?`,
-			req.CurrentChapter, req.Status, existingID,
-		)
-		if err != nil {
-			logger.Errorf("gRPC: Update error: %v", err)
-			return nil, err
-		}
+		return nil, status.Errorf(codes.NotFound, "user not found: %s", req.UserId)
+	}
+	if err != nil {
+		logger.Errorf("gRPC: User lookup error: %v", err)
+		return nil, status.Error(codes.Internal, "failed to look up user")
 	}
 
-	logger.Infof("gRPC: UpdateProgress completed for progress_id=%s", existingID)
+	// Callers may only change their own progress (admins anyone's). The
+	// caller comes from AuthInterceptor; without it, refuse rather than trust req.UserId.
+	caller := CallerFromContext(ctx)
+	if caller == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	if caller.ID != userID && caller.Role != "admin" {
+		return nil, status.Error(codes.PermissionDenied, "you can only update your own progress")
+	}
+
+	var one int
+	err = s.db.QueryRowContext(ctx, "SELECT 1 FROM manga WHERE id = ?", req.MangaId).Scan(&one)
+	if err == sql.ErrNoRows {
+		return nil, status.Errorf(codes.NotFound, "manga not found: %s", req.MangaId)
+	}
+	if err != nil {
+		logger.Errorf("gRPC: Manga lookup error: %v", err)
+		return nil, status.Error(codes.Internal, "failed to look up manga")
+	}
+
+	if isAuditOnly(ctx) {
+		return s.auditProgress(ctx, userID, req)
+	}
+
+	// Upsert keyed on the (user_id, manga_id) unique constraint.
+	// Timestamps come from Go (not SQLite's datetime('now'), which is UTC text)
+	// so they sort consistently with rows written by the HTTP API.
+	now := time.Now()
+	newID := fmt.Sprintf("%s-%s", userID, req.MangaId)
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO reading_progress
+		(id, user_id, manga_id, current_chapter, status, last_read_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, manga_id) DO UPDATE SET
+			current_chapter = excluded.current_chapter,
+			status          = excluded.status,
+			last_read_at    = excluded.last_read_at,
+			updated_at      = excluded.updated_at`,
+		newID, userID, req.MangaId, req.CurrentChapter, req.Status, now, now, now,
+	)
+	if err != nil {
+		logger.Errorf("gRPC: Upsert error: %v", err)
+		return nil, status.Error(codes.Internal, "failed to save progress")
+	}
+
+	var progressID string
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT id FROM reading_progress WHERE user_id = ? AND manga_id = ?", userID, req.MangaId,
+	).Scan(&progressID); err != nil {
+		logger.Errorf("gRPC: Progress lookup error: %v", err)
+		return nil, status.Error(codes.Internal, "failed to load progress")
+	}
+
+	logger.Infof("gRPC: UpdateProgress completed for progress_id=%s", progressID)
 
 	return &pb.ProgressResponse{
-		Id:             existingID,
+		Id:             progressID,
 		UserId:         userID,
 		MangaId:        req.MangaId,
 		CurrentChapter: req.CurrentChapter,
 		Status:         req.Status,
-		Timestamp:      0, // Set by server
+		Timestamp:      time.Now().Unix(),
+	}, nil
+}
+
+// AuditMetadataKey marks an UpdateProgress call as an audit of an update that
+// the HTTP API has already saved. The server then records the audit entry and
+// returns the stored progress without writing: re-writing would race with
+// newer HTTP updates and briefly roll the chapter back.
+const AuditMetadataKey = "x-mangahub-audit"
+
+func isAuditOnly(ctx context.Context) bool {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return false
+	}
+	vals := md.Get(AuditMetadataKey)
+	return len(vals) > 0 && vals[0] == "true"
+}
+
+func (s *MangaServiceServer) auditProgress(ctx context.Context, userID string, req *pb.ProgressRequest) (*pb.ProgressResponse, error) {
+	var progressID, storedStatus string
+	var storedChapter int32
+	err := s.db.QueryRowContext(ctx,
+		"SELECT id, current_chapter, status FROM reading_progress WHERE user_id = ? AND manga_id = ?",
+		userID, req.MangaId,
+	).Scan(&progressID, &storedChapter, &storedStatus)
+	if err == sql.ErrNoRows {
+		return nil, status.Errorf(codes.NotFound, "no progress for user %s on manga %s", userID, req.MangaId)
+	}
+	if err != nil {
+		logger.Errorf("gRPC: Audit lookup error: %v", err)
+		return nil, status.Error(codes.Internal, "failed to load progress")
+	}
+
+	logger.Infof("gRPC: AUDIT progress user=%s manga=%s reported_chapter=%d stored_chapter=%d status=%s",
+		userID, req.MangaId, req.CurrentChapter, storedChapter, storedStatus)
+
+	return &pb.ProgressResponse{
+		Id:             progressID,
+		UserId:         userID,
+		MangaId:        req.MangaId,
+		CurrentChapter: storedChapter,
+		Status:         storedStatus,
+		Timestamp:      time.Now().Unix(),
 	}, nil
 }

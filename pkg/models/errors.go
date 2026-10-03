@@ -23,6 +23,7 @@ const (
 	ErrCodeInternal           = "INTERNAL_ERROR"
 	ErrCodeBadRequest         = "BAD_REQUEST"
 	ErrCodeServiceUnavailable = "SERVICE_UNAVAILABLE"
+	ErrCodeRateLimited        = "RATE_LIMITED"
 )
 
 // Common errors

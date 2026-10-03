@@ -49,6 +49,7 @@ const (
 	ActivityRated     ActivityType = "rated"
 	ActivityComment   ActivityType = "comment"
 	ActivityProgress  ActivityType = "progress"
+	ActivityListAdd   ActivityType = "list_add"
 )
 
 // Activity represents a single activity item
@@ -151,37 +152,39 @@ func (m ActivityModel) Init() tea.Cmd {
 func (m ActivityModel) loadActivities() tea.Msg {
 	ctx := context.Background()
 
-	// Get real activity feed from API
 	activityEntries, err := m.client.GetActivities(ctx, 20)
 	if err != nil {
-		// Generate mock activities if API fails
-		return ActivityLoadedMsg{
-			Activities: m.generateMockActivities(),
-		}
+		return ActivityErrorMsg{Error: err}
 	}
+	return ActivityLoadedMsg{Activities: activitiesFromAPI(activityEntries)}
+}
+
+// activitiesFromAPI converts the API's feed entries (activity_type comment,
+// rating, progress or list_add) to view items.
+func activitiesFromAPI(activityEntries []api.ActivityEntry) []Activity {
 
 	// Convert API ActivityEntry to view Activity struct
 	var activities []Activity
 	for _, entry := range activityEntries {
-		// Determine activity type from API's activity_type
 		var actType ActivityType
+		message := ""
 		switch entry.ActivityType {
 		case "comment":
 			actType = ActivityComment
+			message = entry.CommentText
 		case "rating":
 			actType = ActivityRated
 		case "progress":
+			// Finishing a manga is recorded as progress without a chapter
 			actType = ActivityProgress
+			if entry.Chapter == nil {
+				actType = ActivityCompleted
+			}
 		case "list_add":
-			actType = ActivityStarted
+			actType = ActivityListAdd
+			message = entry.CommentText // the list's name
 		default:
 			actType = ActivityProgress
-		}
-
-		// Build message from API data
-		message := ""
-		if entry.CommentText != "" {
-			message = entry.CommentText
 		}
 
 		// Extract rating and chapter
@@ -203,90 +206,10 @@ func (m ActivityModel) loadActivities() tea.Msg {
 			Message:   message,
 			Rating:    rating,
 			Chapter:   chapter,
-			Likes:     0, // Not provided by API
-			Comments:  0, // Not provided by API
 			Timestamp: entry.CreatedAt,
 		})
 	}
-
-	// Fallback to mock if no activities
-	if len(activities) == 0 {
-		return ActivityLoadedMsg{Activities: m.generateMockActivities()}
-	}
-
-	return ActivityLoadedMsg{Activities: activities}
-}
-
-// generateMockActivities creates sample activities for demo
-func (m ActivityModel) generateMockActivities() []Activity {
-	return []Activity{
-		{
-			ID:        "1",
-			Type:      ActivityStarted,
-			Username:  "manga_king",
-			MangaName: "One Piece",
-			Message:   "Finally starting the greatest adventure!",
-			Likes:     42,
-			Comments:  8,
-			Timestamp: time.Now().Add(-2 * time.Minute),
-		},
-		{
-			ID:        "2",
-			Type:      ActivityRated,
-			Username:  "reader42",
-			MangaName: "Naruto",
-			Rating:    9.0,
-			Likes:     15,
-			Comments:  3,
-			Timestamp: time.Now().Add(-5 * time.Minute),
-		},
-		{
-			ID:        "3",
-			Type:      ActivityCompleted,
-			Username:  "bookworm",
-			MangaName: "Attack on Titan",
-			Message:   "What an incredible journey! 10/10",
-			Likes:     128,
-			Comments:  24,
-			Timestamp: time.Now().Add(-10 * time.Minute),
-		},
-		{
-			ID:        "4",
-			Type:      ActivityProgress,
-			Username:  "speedreader",
-			MangaName: "Jujutsu Kaisen",
-			Chapter:   250,
-			Likes:     8,
-			Comments:  1,
-			Timestamp: time.Now().Add(-15 * time.Minute),
-		},
-		{
-			ID:        "5",
-			Type:      ActivityComment,
-			Username:  "otaku_prime",
-			MangaName: "Demon Slayer",
-			Message:   "The animation in this arc is godly!",
-			Likes:     56,
-			Comments:  12,
-			Timestamp: time.Now().Add(-20 * time.Minute),
-		},
-	}
-}
-
-func getRandomMessage(i int) string {
-	messages := []string{
-		"Starting this masterpiece!",
-		"Finally caught up!",
-		"This chapter was insane!",
-		"Can't stop reading!",
-		"Highly recommended!",
-		"The plot thickens...",
-		"Mind = blown",
-		"This arc is fire!",
-		"Peak fiction right here",
-		"What a ride!",
-	}
-	return messages[i%len(messages)]
+	return activities
 }
 
 // Update handles messages
@@ -327,8 +250,13 @@ func (m ActivityModel) Update(msg tea.Msg) (ActivityModel, tea.Cmd) {
 		m.activities = msg.Activities
 		m.loading = false
 		m.lastFetch = time.Now()
+		m.lastError = nil
+		if m.selectedIndex >= len(m.activities) {
+			m.selectedIndex = 0
+		}
 
 	case ActivityErrorMsg:
+		// Keep what was shown; the feed renders the error
 		m.lastError = msg.Error
 		m.loading = false
 
@@ -398,7 +326,15 @@ func (m ActivityModel) renderFeed() string {
 		return m.theme.DimText.Render("Loading activities... " + m.spinner.View())
 	}
 
+	errLine := ""
+	if m.lastError != nil {
+		errLine = m.theme.Error.Render("Couldn't load the activity feed: "+m.lastError.Error()) +
+			m.theme.DimText.Render("  (r to retry)")
+	}
 	if len(m.activities) == 0 {
+		if errLine != "" {
+			return errLine
+		}
 		return m.theme.DimText.Render("No recent activity. Be the first to share!")
 	}
 
@@ -428,6 +364,9 @@ func (m ActivityModel) renderFeed() string {
 	}
 
 	list := lipgloss.JoinVertical(lipgloss.Left, items...)
+	if errLine != "" {
+		return errLine + "\n" + listStyle.Render(list)
+	}
 	return listStyle.Render(list)
 }
 
@@ -457,6 +396,11 @@ func (m ActivityModel) renderActivityItem(activity Activity, selected bool) stri
 	timeAgo := formatTimeAgo(activity.Timestamp)
 	timeText := m.theme.DimText.Render(timeAgo)
 
+	// The feed API has no likes/replies on activities; don't show made-up zeros
+	if activity.Likes == 0 && activity.Comments == 0 {
+		lines = append(lines, "     "+timeText)
+		return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	}
 	engagement := m.theme.Secondary.Render(fmt.Sprintf("♥ %d", activity.Likes)) + "  " +
 		m.theme.DimText.Render(fmt.Sprintf("💬 %d", activity.Comments))
 
@@ -487,6 +431,8 @@ func (m ActivityModel) getActivityIcon(actType ActivityType) string {
 		return "💬"
 	case ActivityProgress:
 		return "📈"
+	case ActivityListAdd:
+		return "📋"
 	default:
 		return "📌"
 	}
@@ -509,6 +455,8 @@ func (m ActivityModel) getActivityAction(activity Activity) string {
 	case ActivityProgress:
 		chapter := m.theme.Primary.Render(fmt.Sprintf("Ch. %d", activity.Chapter))
 		return "reached " + chapter + " in " + manga
+	case ActivityListAdd:
+		return "added " + manga + " to a list"
 	default:
 		return "interacted with " + manga
 	}

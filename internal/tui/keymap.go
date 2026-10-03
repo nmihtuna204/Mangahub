@@ -10,43 +10,43 @@ import (
 // KeyMap defines global keyboard shortcuts
 type KeyMap struct {
 	// Navigation
-	Quit       key.Binding
-	Help       key.Binding
-	Back       key.Binding
-	Enter      key.Binding
+	Quit  key.Binding
+	Help  key.Binding
+	Back  key.Binding
+	Enter key.Binding
 
 	// View switching
-	Dashboard  key.Binding
-	Search     key.Binding
-	Browse     key.Binding
-	Library    key.Binding
-	Profile    key.Binding
-	Activity   key.Binding
-	Stats      key.Binding
-	Settings   key.Binding
-	Login      key.Binding
-	Chat       key.Binding // Chat view
+	Dashboard key.Binding
+	Search    key.Binding
+	Browse    key.Binding
+	Library   key.Binding
+	Profile   key.Binding
+	Activity  key.Binding
+	Stats     key.Binding
+	Settings  key.Binding
+	Login     key.Binding
+	Chat      key.Binding // Chat view
 
 	// List navigation
-	Up         key.Binding
-	Down       key.Binding
-	Left       key.Binding
-	Right      key.Binding
-	PageUp     key.Binding
-	PageDown   key.Binding
-	Home       key.Binding
-	End        key.Binding
+	Up       key.Binding
+	Down     key.Binding
+	Left     key.Binding
+	Right    key.Binding
+	PageUp   key.Binding
+	PageDown key.Binding
+	Home     key.Binding
+	End      key.Binding
 
 	// Tabs
-	NextTab    key.Binding
-	PrevTab    key.Binding
+	NextTab key.Binding
+	PrevTab key.Binding
 
 	// Actions
-	Refresh    key.Binding
-	Delete     key.Binding
-	Update     key.Binding
-	Rate       key.Binding
-	Comment    key.Binding
+	Refresh key.Binding
+	Delete  key.Binding
+	Update  key.Binding
+	Rate    key.Binding
+	Comment key.Binding
 }
 
 // DefaultKeyMap returns the default key bindings

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"mangahub/internal/manga"
 	"mangahub/pkg/models"
 
 	"github.com/google/uuid"
@@ -28,40 +29,32 @@ func NewRepository(db *sql.DB) Repository {
 func (r *repository) AddOrUpdate(ctx context.Context, userID string, req models.UpdateProgressRequest) (*models.ReadingProgress, error) {
 	now := time.Now()
 
-	var existingID string
-	err := r.db.QueryRowContext(ctx,
-		"SELECT id FROM reading_progress WHERE user_id = ? AND manga_id = ?",
-		userID, req.MangaID,
-	).Scan(&existingID)
-
-	if err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("check progress: %w", err)
+	// Verify the manga exists so a bad ID returns 404 instead of a raw
+	// foreign-key constraint failure (500).
+	var exists int
+	if err := r.db.QueryRowContext(ctx, "SELECT 1 FROM manga WHERE id = ?", req.MangaID).Scan(&exists); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, models.NewAppError(models.ErrCodeNotFound, "manga not found", 404, models.ErrMangaNotFound)
+		}
+		return nil, fmt.Errorf("check manga: %w", err)
 	}
 
-	if err == sql.ErrNoRows {
-		id := uuid.New().String()
-		_, err = r.db.ExecContext(ctx, `
-			INSERT INTO reading_progress
-			(id, user_id, manga_id, current_chapter, status, is_favorite,
-			 last_read_at, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, userID, req.MangaID, req.CurrentChapter, req.Status,
-			req.IsFavorite, now, now, now,
-		)
+	// Update first; if the entry doesn't exist yet, insert it. ON CONFLICT
+	// covers a concurrent insert of the same (user, manga), after which we
+	// apply this request as an update instead.
+	updated, err := r.update(ctx, userID, req, now)
+	if err != nil {
+		return nil, err
+	}
+	if !updated {
+		inserted, err := r.insert(ctx, userID, req, now)
 		if err != nil {
-			return nil, fmt.Errorf("insert progress: %w", err)
+			return nil, err
 		}
-		existingID = id
-	} else {
-		_, err = r.db.ExecContext(ctx, `
-			UPDATE reading_progress
-			SET current_chapter = ?, status = ?, is_favorite = ?, 
-			    last_read_at = ?, updated_at = ?
-			WHERE id = ?`,
-			req.CurrentChapter, req.Status, req.IsFavorite, now, now, existingID,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("update progress: %w", err)
+		if !inserted {
+			if _, err := r.update(ctx, userID, req, now); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -69,7 +62,7 @@ func (r *repository) AddOrUpdate(ctx context.Context, userID string, req models.
 		SELECT id, user_id, manga_id, current_chapter, status,
 		       is_favorite, started_at, completed_at,
 		       last_read_at, created_at, updated_at
-		FROM reading_progress WHERE id = ?`, existingID)
+		FROM reading_progress WHERE user_id = ? AND manga_id = ?`, userID, req.MangaID)
 
 	var p models.ReadingProgress
 	err = row.Scan(
@@ -83,14 +76,101 @@ func (r *repository) AddOrUpdate(ctx context.Context, userID string, req models.
 	return &p, nil
 }
 
+// update applies only the fields present in req to an existing entry.
+// SQLite evaluates every SET expression against the row's old values, so
+// COALESCE(?, col) means "the new value if given, else the stored one".
+func (r *repository) update(ctx context.Context, userID string, req models.UpdateProgressRequest, now time.Time) (bool, error) {
+	chapter, status, fav := nullable(req.CurrentChapter), nullable(req.Status), nullable(req.IsFavorite)
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE reading_progress SET
+			current_chapter = COALESCE(?, current_chapter),
+			status          = COALESCE(?, status),
+			is_favorite     = COALESCE(?, is_favorite),
+			started_at      = CASE
+			                    WHEN started_at IS NULL
+			                     AND (COALESCE(?, status) IN ('reading', 'completed') OR COALESCE(?, current_chapter) > 0)
+			                    THEN ? ELSE started_at END,
+			completed_at    = CASE WHEN COALESCE(?, status) = 'completed' THEN COALESCE(completed_at, ?) ELSE NULL END,
+			last_read_at    = CASE WHEN ? IS NULL THEN last_read_at ELSE ? END,
+			updated_at      = ?
+		WHERE user_id = ? AND manga_id = ?`,
+		chapter, status, fav,
+		status, chapter, now,
+		status, now,
+		chapter, now,
+		now,
+		userID, req.MangaID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("update progress: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("update progress: %w", err)
+	}
+	return n > 0, nil
+}
+
+// insert creates a new library entry, defaulting omitted fields.
+// It reports false if an entry for (user, manga) already exists.
+func (r *repository) insert(ctx context.Context, userID string, req models.UpdateProgressRequest, now time.Time) (bool, error) {
+	chapter := 0
+	if req.CurrentChapter != nil {
+		chapter = *req.CurrentChapter
+	}
+	status := "plan_to_read"
+	if chapter > 0 {
+		status = "reading"
+	}
+	if req.Status != nil {
+		status = *req.Status
+	}
+	fav := req.IsFavorite != nil && *req.IsFavorite
+
+	var startedAt, completedAt interface{}
+	if status == "reading" || status == "completed" || chapter > 0 {
+		startedAt = now
+	}
+	if status == "completed" {
+		completedAt = now
+	}
+
+	res, err := r.db.ExecContext(ctx, `
+		INSERT INTO reading_progress
+		(id, user_id, manga_id, current_chapter, status, is_favorite,
+		 started_at, completed_at, last_read_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, manga_id) DO NOTHING`,
+		uuid.New().String(), userID, req.MangaID, chapter, status, fav,
+		startedAt, completedAt, now, now, now,
+	)
+	if err != nil {
+		return false, fmt.Errorf("insert progress: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("insert progress: %w", err)
+	}
+	return n > 0, nil
+}
+
+// nullable turns an optional field into a SQL argument (NULL when absent).
+func nullable[T any](v *T) interface{} {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
 func (r *repository) ListByUser(ctx context.Context, userID string) ([]models.ProgressWithManga, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT
 			r.id, r.user_id, r.manga_id, r.current_chapter, r.status,
 			r.is_favorite, r.started_at, r.completed_at,
 			r.last_read_at, r.created_at, r.updated_at,
-			m.id, m.title, m.author, m.artist, m.description, m.cover_url,
-			m.status, m.type, m.total_chapters, m.average_rating, m.rating_count, m.year,
+			m.id, m.title, COALESCE(m.author, ''), COALESCE(m.artist, ''), COALESCE(m.description, ''),
+			COALESCE(m.cover_url, ''),
+			m.status, m.type, m.total_chapters, m.average_rating, m.rating_count, COALESCE(m.year, 0),
 			m.created_at, m.updated_at
 		FROM reading_progress r
 		JOIN manga m ON r.manga_id = m.id
@@ -101,7 +181,7 @@ func (r *repository) ListByUser(ctx context.Context, userID string) ([]models.Pr
 	}
 	defer rows.Close()
 
-	var result []models.ProgressWithManga
+	result := []models.ProgressWithManga{}
 	for rows.Next() {
 		var p models.ReadingProgress
 		var m models.Manga
@@ -115,38 +195,27 @@ func (r *repository) ListByUser(ctx context.Context, userID string) ([]models.Pr
 		); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
-		// Load genres for manga
-		m.Genres = r.loadGenresForManga(ctx, m.ID)
 		result = append(result, models.ProgressWithManga{
 			ReadingProgress: p,
 			Manga:           m,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate progress: %w", err)
+	}
+	rows.Close() // release the connection before the genre query
+
+	mangaList := make([]models.Manga, len(result))
+	for i := range result {
+		mangaList[i] = result[i].Manga
+	}
+	if err := manga.AttachGenres(ctx, r.db, mangaList); err != nil {
+		return nil, err
+	}
+	for i := range result {
+		result[i].Manga.Genres = mangaList[i].Genres
+	}
 	return result, nil
-}
-
-// loadGenresForManga loads all genres for a manga from the manga_genres junction table
-func (r *repository) loadGenresForManga(ctx context.Context, mangaID string) []models.Genre {
-	rows, err := r.db.QueryContext(ctx, `
-		SELECT g.id, g.name, g.slug, g.created_at
-		FROM genres g
-		INNER JOIN manga_genres mg ON g.id = mg.genre_id
-		WHERE mg.manga_id = ?
-		ORDER BY g.name`, mangaID)
-	if err != nil {
-		return []models.Genre{}
-	}
-	defer rows.Close()
-
-	var genres []models.Genre
-	for rows.Next() {
-		var g models.Genre
-		if err := rows.Scan(&g.ID, &g.Name, &g.Slug, &g.CreatedAt); err != nil {
-			continue
-		}
-		genres = append(genres, g)
-	}
-	return genres
 }
 
 // Delete removes a manga from user's library

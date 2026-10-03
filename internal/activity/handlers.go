@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"mangahub/pkg/models"
 )
 
 // Handler handles HTTP requests for activities
@@ -27,7 +28,8 @@ func (h *Handler) GetRecentActivities(c *gin.Context) {
 
 	activities, total, err := h.service.GetRecentActivities(c.Request.Context(), limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError,
+			models.NewErrorResponse(models.ErrCodeInternal, "failed to load activities", nil))
 		return
 	}
 
@@ -48,7 +50,8 @@ func (h *Handler) GetUserActivities(c *gin.Context) {
 
 	activities, total, err := h.service.GetUserActivities(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError,
+			models.NewErrorResponse(models.ErrCodeInternal, "failed to load activities", nil))
 		return
 	}
 

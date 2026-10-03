@@ -29,6 +29,10 @@ func NewService(repo Repository) Service {
 }
 
 func (s *service) Update(ctx context.Context, userID string, req models.UpdateProgressRequest) (*models.ReadingProgress, error) {
+	// An explicit empty status means "leave unchanged", same as omitting it
+	if req.Status != nil && *req.Status == "" {
+		req.Status = nil
+	}
 	if err := utils.ValidateStruct(req); err != nil {
 		return nil, models.NewAppError(models.ErrCodeValidation, "invalid progress data", 400, err)
 	}

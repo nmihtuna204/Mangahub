@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
-	"mangahub/internal/tcp"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"mangahub/internal/tcp"
 )
 
 var syncCmd = &cobra.Command{
@@ -35,7 +36,7 @@ var syncCmd = &cobra.Command{
 		// Connect to TCP server
 		host := viper.GetString("server.host")
 		port := viper.GetInt("server.tcp_port")
-		serverAddr := fmt.Sprintf("%s:%d", host, port)
+		serverAddr := net.JoinHostPort(host, strconv.Itoa(port))
 
 		conn, err := net.Dial("tcp", serverAddr)
 		if err != nil {

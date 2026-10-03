@@ -52,8 +52,7 @@ type DetailModel struct {
 	library *api.LibraryEntry
 
 	// Loading
-	loading        bool
-	loadingRatings bool
+	loading bool
 
 	// Components
 	spinner spinner.Model
@@ -175,12 +174,13 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "left", "h":
-			m.selectedAction--
-			if m.selectedAction < 0 {
-				m.selectedAction = len(m.actions) - 1
+			if len(m.actions) > 0 {
+				m.selectedAction = (m.selectedAction - 1 + len(m.actions)) % len(m.actions)
 			}
 		case "right", "l":
-			m.selectedAction = (m.selectedAction + 1) % len(m.actions)
+			if len(m.actions) > 0 {
+				m.selectedAction = (m.selectedAction + 1) % len(m.actions)
+			}
 
 		case "r":
 			// Read next chapter

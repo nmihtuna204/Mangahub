@@ -9,7 +9,11 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -29,6 +33,13 @@ type Config struct {
 	MangaDex  MangaDexConfig
 	Jikan     JikanConfig
 	AniList   AniListConfig
+	Chapters  ChaptersConfig
+}
+
+// ChaptersConfig controls the background check for new chapters
+type ChaptersConfig struct {
+	SyncInterval time.Duration `mapstructure:"sync_interval"` // 0 disables the background sync
+	Language     string        `mapstructure:"language"`      // chapters counted in this translation
 }
 
 type ServerConfig struct {
@@ -38,6 +49,13 @@ type ServerConfig struct {
 	WriteTimeout time.Duration `mapstructure:"write_timeout"`
 	IdleTimeout  time.Duration `mapstructure:"idle_timeout"`
 	Mode         string        `mapstructure:"mode"` // debug, release
+
+	// Per client IP; 0 disables. AuthRateLimit (per minute) applies to
+	// /auth/login and /auth/register on top of RateLimit.
+	RateLimit     float64 `mapstructure:"rate_limit"` // requests per second
+	RateBurst     int     `mapstructure:"rate_burst"`
+	AuthRateLimit float64 `mapstructure:"auth_rate_limit"` // attempts per minute
+	AuthRateBurst int     `mapstructure:"auth_rate_burst"`
 }
 
 type DatabaseConfig struct {
@@ -64,6 +82,8 @@ type UDPConfig struct {
 	Host       string `mapstructure:"host"`
 	Port       int    `mapstructure:"port"`
 	BufferSize int    `mapstructure:"buffer_size"`
+	// Subscribers that don't re-send REGISTER within this are dropped
+	SubscriberTTL time.Duration `mapstructure:"subscriber_ttl"`
 }
 
 type GRPCConfig struct {
@@ -120,27 +140,39 @@ type AniListConfig struct {
 	RetryAttempts int           `mapstructure:"retry_attempts"`
 }
 
-// Load reads configuration from file
+// Load reads configuration from file.
+// The MANGAHUB_CONFIG environment variable, if set, overrides configPath.
+// Any key can also be overridden by an environment variable named after it
+// with dots replaced by underscores, e.g. TCP_HOST=tcp-server or SERVER_PORT=8081.
 func Load(configPath string) (*Config, error) {
-	viper.SetConfigName("development")
+	if env := os.Getenv("MANGAHUB_CONFIG"); env != "" {
+		configPath = env
+	}
 	viper.SetConfigType("yaml")
-	viper.AddConfigPath("./configs")
-	viper.AddConfigPath(".")
+	if configPath != "" {
+		viper.SetConfigFile(configPath)
+	} else {
+		viper.SetConfigName("development")
+		viper.AddConfigPath("./configs")
+		viper.AddConfigPath(".")
+	}
+
+	// Allow environment variable override
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
 
 	// Set defaults
 	setDefaults()
 
 	// Read config file
 	if err := viper.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+		var notFound viper.ConfigFileNotFoundError
+		if errors.As(err, &notFound) || errors.Is(err, fs.ErrNotExist) {
 			fmt.Println("Config file not found, using defaults")
 		} else {
 			return nil, fmt.Errorf("failed to read config: %w", err)
 		}
 	}
-
-	// Allow environment variable override
-	viper.AutomaticEnv()
 
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
@@ -158,6 +190,10 @@ func setDefaults() {
 	viper.SetDefault("server.write_timeout", "15s")
 	viper.SetDefault("server.idle_timeout", "60s")
 	viper.SetDefault("server.mode", "debug")
+	viper.SetDefault("server.rate_limit", 50)
+	viper.SetDefault("server.rate_burst", 100)
+	viper.SetDefault("server.auth_rate_limit", 10)
+	viper.SetDefault("server.auth_rate_burst", 10)
 
 	// Database defaults
 	viper.SetDefault("database.path", "./data/mangahub.db")
@@ -180,6 +216,7 @@ func setDefaults() {
 	viper.SetDefault("udp.host", "localhost")
 	viper.SetDefault("udp.port", 9091)
 	viper.SetDefault("udp.buffer_size", 2048)
+	viper.SetDefault("udp.subscriber_ttl", "5m")
 
 	// gRPC defaults
 	viper.SetDefault("grpc.host", "localhost")
@@ -217,6 +254,10 @@ func setDefaults() {
 	viper.SetDefault("jikan.rate_limit", 3)
 	viper.SetDefault("jikan.timeout", "30s")
 	viper.SetDefault("jikan.retry_attempts", 3)
+
+	// New chapter sync (off by default: it calls the MangaDex API)
+	viper.SetDefault("chapters.sync_interval", "0s")
+	viper.SetDefault("chapters.language", "en")
 
 	// AniList API defaults
 	viper.SetDefault("anilist.base_url", "https://graphql.anilist.co")

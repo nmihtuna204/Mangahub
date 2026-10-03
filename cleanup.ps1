@@ -1,4 +1,4 @@
-# MangaHub Project Cleanup Script
+﻿# MangaHub Project Cleanup Script
 # Run this to clean up redundant files safely
 
 Write-Host "=====================================" -ForegroundColor Cyan

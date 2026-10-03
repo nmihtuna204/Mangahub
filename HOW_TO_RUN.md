@@ -547,17 +547,12 @@ SELECT * FROM progress;
 
 ### Load Testing
 
-Run the load test script:
+Run the load test script (needs bash, e.g. Git Bash, and curl; grpcurl is optional):
 ```powershell
-.\test\load_test.sh
+bash test/load_test.sh
 ```
 
-Or manually:
-```powershell
-# Install Apache Bench (ab) or use similar tool
-# Test API endpoint
-ab -n 1000 -c 10 http://localhost:8080/api/v1/manga/1
-```
+It checks every request and exits 1 on any failure. The API allows 50 requests/s per IP (bursts of 100) and answers `429` beyond that; the script stays inside that, but for heavier tools (`ab`, `hey`, ...) from one machine set `rate_limit: 0` under `server:` in `configs/development.yaml` first.
 
 ### Monitor Resource Usage
 

@@ -1,6 +1,7 @@
 package database
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -10,52 +11,68 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Seed populates the database with initial data
+// Seed populates the database with initial data.
+//
+// The whole seed runs inside a single transaction whose first statement is a
+// write (the seed_meta marker insert). That write takes SQLite's write lock,
+// so when several servers start at once against the same database file, they
+// serialize here: the first one seeds, the rest wait, then see the marker (or
+// existing data) and skip. Requires busy_timeout to be set on the connection.
 func (db *DB) Seed() error {
-	// Check if already seeded
-	var count int
-	err := db.QueryRow("SELECT COUNT(*) FROM manga").Scan(&count)
+	tx, err := db.Begin()
 	if err != nil {
-		return fmt.Errorf("failed to check seed status: %w", err)
+		return fmt.Errorf("failed to begin seed transaction: %w", err)
 	}
+	defer tx.Rollback()
 
-	if count > 0 {
+	// Claim the seed marker. 0 rows affected means another process already
+	// seeded (and committed) before us.
+	res, err := tx.Exec("INSERT OR IGNORE INTO seed_meta (id) VALUES (1)")
+	if err != nil {
+		return fmt.Errorf("failed to claim seed marker: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
 		fmt.Println("Database already seeded, skipping...")
 		return nil
 	}
 
+	// Databases created before seed_meta existed have data but no marker.
+	var count int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM manga").Scan(&count); err != nil {
+		return fmt.Errorf("failed to check seed status: %w", err)
+	}
+	if count > 0 {
+		fmt.Println("Database already seeded, skipping...")
+		return tx.Commit() // keep the marker for next time
+	}
+
 	fmt.Println("Seeding database...")
 
-	// Seed admin user
-	if err := db.seedAdminUser(); err != nil {
+	if err := seedAdminUser(tx); err != nil {
+		return err
+	}
+	if err := seedTestUsers(tx); err != nil {
+		return err
+	}
+	if err := seedGenres(tx); err != nil {
+		return err
+	}
+	if err := seedMangaData(tx); err != nil {
+		return err
+	}
+	if err := seedReadingProgress(tx); err != nil {
 		return err
 	}
 
-	// Seed test users
-	if err := db.seedTestUsers(); err != nil {
-		return err
-	}
-
-	// Seed genres
-	if err := db.seedGenres(); err != nil {
-		return err
-	}
-
-	// Seed manga data with 10 samples
-	if err := db.seedMangaData(); err != nil {
-		return err
-	}
-
-	// Seed user reading progress
-	if err := db.seedReadingProgress(); err != nil {
-		return err
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit seed transaction: %w", err)
 	}
 
 	fmt.Println("Database seeded successfully!")
 	return nil
 }
 
-func (db *DB) seedAdminUser() error {
+func seedAdminUser(tx *sql.Tx) error {
 	hash, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
 	if err != nil {
 		return err
@@ -73,7 +90,7 @@ func (db *DB) seedAdminUser() error {
 		UpdatedAt:    time.Now(),
 	}
 
-	_, err = db.Exec(`
+	_, err = tx.Exec(`
 		INSERT INTO users (id, username, email, password_hash, display_name, role, is_active, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		user.ID, user.Username, user.Email, user.PasswordHash, user.DisplayName,
@@ -83,7 +100,7 @@ func (db *DB) seedAdminUser() error {
 	return err
 }
 
-func (db *DB) seedTestUsers() error {
+func seedTestUsers(tx *sql.Tx) error {
 	users := []struct {
 		username string
 		email    string
@@ -112,7 +129,7 @@ func (db *DB) seedTestUsers() error {
 			UpdatedAt:    time.Now(),
 		}
 
-		_, err = db.Exec(`
+		_, err = tx.Exec(`
 			INSERT INTO users (id, username, email, password_hash, display_name, role, is_active, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			user.ID, user.Username, user.Email, user.PasswordHash, user.DisplayName,
@@ -126,7 +143,7 @@ func (db *DB) seedTestUsers() error {
 	return nil
 }
 
-func (db *DB) seedGenres() error {
+func seedGenres(tx *sql.Tx) error {
 	genres := []struct {
 		name string
 		slug string
@@ -149,7 +166,7 @@ func (db *DB) seedGenres() error {
 	}
 
 	for _, g := range genres {
-		_, err := db.Exec(`
+		_, err := tx.Exec(`
 			INSERT INTO genres (id, name, slug, created_at)
 			VALUES (?, ?, ?, ?)`,
 			uuid.New().String(), g.name, g.slug, time.Now(),
@@ -162,7 +179,7 @@ func (db *DB) seedGenres() error {
 	return nil
 }
 
-func (db *DB) seedMangaData() error {
+func seedMangaData(tx *sql.Tx) error {
 	// 120+ sample manga entries matching new normalized schema
 	mangaList := []struct {
 		title       string
@@ -317,7 +334,7 @@ func (db *DB) seedMangaData() error {
 		mangaID := uuid.New().String()
 
 		// Insert manga
-		_, err := db.Exec(`
+		_, err := tx.Exec(`
 			INSERT INTO manga (id, title, author, artist, description, status, type, total_chapters, year, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			mangaID, m.title, m.author, m.artist, m.description,
@@ -330,9 +347,9 @@ func (db *DB) seedMangaData() error {
 		// Get genre IDs and link to manga
 		for _, genreName := range m.genres {
 			var genreID string
-			err := db.QueryRow("SELECT id FROM genres WHERE name = ?", genreName).Scan(&genreID)
+			err := tx.QueryRow("SELECT id FROM genres WHERE name = ?", genreName).Scan(&genreID)
 			if err == nil {
-				_, err = db.Exec(`
+				_, err = tx.Exec(`
 					INSERT INTO manga_genres (id, manga_id, genre_id, created_at)
 					VALUES (?, ?, ?, ?)`,
 					uuid.New().String(), mangaID, genreID, time.Now(),
@@ -342,24 +359,18 @@ func (db *DB) seedMangaData() error {
 				}
 			}
 		}
-
-		// Create external IDs entry
-		_, err = db.Exec(`
-			INSERT INTO manga_external_ids (manga_id, mangadex_id, primary_source, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?)`,
-			mangaID, uuid.New().String()[:8], "mangadex", time.Now(), time.Now(),
-		)
-		if err != nil {
-			return err
-		}
+		// No external IDs here: real MangaDex IDs are looked up by title on the
+		// first `data-cli sync-chapters --link` (earlier versions stored random
+		// placeholders that broke every MangaDex request)
 	}
 
 	return nil
 }
 
-func (db *DB) seedReadingProgress() error {
-	// Get test users
-	rows, err := db.Query("SELECT id FROM users WHERE role = 'user' LIMIT 3")
+func seedReadingProgress(tx *sql.Tx) error {
+	// Get test users. Every query here is ordered: IDs are random UUIDs, and
+	// without ORDER BY each fresh database got a different sample library.
+	rows, err := tx.Query("SELECT id FROM users WHERE role = 'user' ORDER BY username LIMIT 3")
 	if err != nil {
 		return err
 	}
@@ -379,7 +390,7 @@ func (db *DB) seedReadingProgress() error {
 	}
 
 	// Get manga
-	mangaRows, err := db.Query("SELECT id FROM manga LIMIT 5")
+	mangaRows, err := tx.Query("SELECT id FROM manga ORDER BY title, id LIMIT 5")
 	if err != nil {
 		return err
 	}
@@ -411,7 +422,7 @@ func (db *DB) seedReadingProgress() error {
 				currentChapter = 0
 			}
 
-			_, err := db.Exec(`
+			_, err := tx.Exec(`
 				INSERT INTO reading_progress (id, user_id, manga_id, current_chapter, status, is_favorite, last_read_at, created_at, updated_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				uuid.New().String(), userID, mangaID, currentChapter, status, j%2 == 0, time.Now(), time.Now(), time.Now(),

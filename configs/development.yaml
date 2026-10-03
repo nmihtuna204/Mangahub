@@ -5,6 +5,11 @@ server:
   write_timeout: "15s"
   idle_timeout: "60s"
   mode: "debug"
+  # Rate limiting per client IP (0 disables; set rate_limit: 0 for load tests)
+  rate_limit: 50          # requests per second
+  rate_burst: 100
+  auth_rate_limit: 10     # per minute: registrations, and failed logins
+  auth_rate_burst: 10
 
 database:
   path: "./data/mangahub.db"
@@ -25,8 +30,9 @@ tcp:
 
 udp:
   host: "0.0.0.0"
-  port: 9095
+  port: 9091
   buffer_size: 2048
+  subscriber_ttl: 5m      # clients re-send REGISTER every minute as a heartbeat
 
 grpc:
   host: "0.0.0.0"
@@ -66,6 +72,14 @@ jikan:
   rate_limit: 3          # requests per second
   timeout: "30s"
   retry_attempts: 3
+
+# New chapter notifications: the API server checks MangaDex for chapters newer
+# than manga.total_chapters and sends a UDP chapter_release to each manga's
+# readers. "0s" disables it; e.g. "30m" checks every 30 minutes. Run a single
+# check by hand with: go run ./cmd/data-cli sync-chapters --link
+chapters:
+  sync_interval: "0s"
+  language: "en"
 
 anilist:
   base_url: "https://graphql.anilist.co"

@@ -3,6 +3,7 @@ package manga
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"mangahub/pkg/models"
@@ -20,8 +21,15 @@ func (h *Handler) ListManga(c *gin.Context) {
 	var req models.MangaSearchRequest
 	req.Query = c.Query("q")
 	req.Status = c.Query("status")
+	req.Type = c.Query("type")
 	req.SortBy = c.Query("sort_by")
 	req.Order = c.Query("order")
+	// ?genre=action&genre=romance or ?genres=action,romance
+	for _, g := range append(c.QueryArray("genre"), strings.Split(c.Query("genres"), ",")...) {
+		if g = strings.TrimSpace(g); g != "" {
+			req.Genres = append(req.Genres, g)
+		}
+	}
 
 	if limitStr := c.Query("limit"); limitStr != "" {
 		if v, err := strconv.Atoi(limitStr); err == nil {

@@ -32,8 +32,24 @@ type Config struct {
 	ConnMaxLifetime time.Duration
 }
 
-// NewDB creates a new database connection
+// NewDB opens the database, runs migrations and seeds it if empty
 func NewDB(config Config) (*DB, error) {
+	db, err := Open(config)
+	if err != nil {
+		return nil, err
+	}
+
+	// Seed initial data if empty
+	if err := db.Seed(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to seed database: %w", err)
+	}
+
+	return db, nil
+}
+
+// Open opens the database and runs migrations, without seeding
+func Open(config Config) (*DB, error) {
 	// Ensure directory exists
 	dir := filepath.Dir(config.Path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -41,7 +57,7 @@ func NewDB(config Config) (*DB, error) {
 	}
 
 	// Open database connection
-	sqlDB, err := sql.Open("sqlite", config.Path+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)")
+	sqlDB, err := sql.Open("sqlite", config.Path+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -53,6 +69,7 @@ func NewDB(config Config) (*DB, error) {
 
 	// Verify connection
 	if err := sqlDB.Ping(); err != nil {
+		sqlDB.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
@@ -60,12 +77,8 @@ func NewDB(config Config) (*DB, error) {
 
 	// Run migrations
 	if err := db.Migrate(); err != nil {
+		sqlDB.Close()
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
-	}
-
-	// Seed initial data if empty
-	if err := db.Seed(); err != nil {
-		return nil, fmt.Errorf("failed to seed database: %w", err)
 	}
 
 	return db, nil
@@ -79,6 +92,14 @@ func (db *DB) Close() error {
 // Migrate runs database migrations
 func (db *DB) Migrate() error {
 	migrations := []string{
+		// ===== Seed bookkeeping =====
+		// Single-row table used as a cross-process lock/marker so that only one
+		// server seeds the database when several start against the same file.
+		`CREATE TABLE IF NOT EXISTS seed_meta (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			seeded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+
 		// ===== Core Tables =====
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
@@ -86,6 +107,7 @@ func (db *DB) Migrate() error {
 			email TEXT UNIQUE NOT NULL,
 			password_hash TEXT NOT NULL,
 			display_name TEXT NOT NULL,
+			avatar_url TEXT,
 			role TEXT DEFAULT 'user' CHECK (role IN ('user', 'admin', 'moderator')),
 			is_active BOOLEAN DEFAULT 1,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -136,19 +158,9 @@ func (db *DB) Migrate() error {
 			content='manga'
 		)`,
 
-		`CREATE TRIGGER IF NOT EXISTS manga_fts_insert AFTER INSERT ON manga BEGIN
-			INSERT INTO manga_fts(id, title, author, description)
-			VALUES (new.id, new.title, new.author, new.description);
-		END`,
-
-		`CREATE TRIGGER IF NOT EXISTS manga_fts_update AFTER UPDATE ON manga BEGIN
-			UPDATE manga_fts SET title = new.title, author = new.author, description = new.description
-			WHERE id = new.id;
-		END`,
-
-		`CREATE TRIGGER IF NOT EXISTS manga_fts_delete AFTER DELETE ON manga BEGIN
-			DELETE FROM manga_fts WHERE id = old.id;
-		END`,
+		mangaFTSInsertTrigger,
+		mangaFTSUpdateTrigger,
+		mangaFTSDeleteTrigger,
 
 		// ===== External IDs =====
 		`CREATE TABLE IF NOT EXISTS manga_external_ids (
@@ -367,6 +379,51 @@ func (db *DB) Migrate() error {
 			WHERE u.id = new.user_id AND m.id = new.manga_id;
 		END`,
 
+		// A changed rating refreshes its single feed entry instead of adding a second one
+		`CREATE TRIGGER IF NOT EXISTS activity_on_rating_update AFTER UPDATE OF rating ON manga_ratings
+		WHEN new.rating <> old.rating BEGIN
+			INSERT OR REPLACE INTO activity_feed (id, user_id, username, activity_type, manga_id, manga_title, rating, created_at)
+			SELECT
+				'act-' || new.id,
+				new.user_id,
+				u.username,
+				'rating',
+				new.manga_id,
+				m.title,
+				new.rating,
+				new.updated_at
+			FROM users u, manga m
+			WHERE u.id = new.user_id AND m.id = new.manga_id;
+		END`,
+
+		`CREATE TRIGGER IF NOT EXISTS activity_on_rating_delete AFTER DELETE ON manga_ratings BEGIN
+			DELETE FROM activity_feed WHERE id = 'act-' || old.id;
+		END`,
+
+		// Adding a manga to a *public* custom list shows up in the feed;
+		// comment_text carries the list name. Private lists stay private.
+		`CREATE TRIGGER IF NOT EXISTS activity_on_list_add AFTER INSERT ON custom_list_items
+		WHEN (SELECT is_public FROM custom_lists WHERE id = new.list_id) = 1 BEGIN
+			INSERT OR IGNORE INTO activity_feed (id, user_id, username, activity_type, manga_id, manga_title, comment_text, created_at)
+			SELECT
+				'act-' || new.id,
+				l.user_id,
+				u.username,
+				'list_add',
+				new.manga_id,
+				m.title,
+				l.name,
+				new.added_at
+			FROM custom_lists l
+			JOIN users u ON u.id = l.user_id
+			JOIN manga m ON m.id = new.manga_id
+			WHERE l.id = new.list_id;
+		END`,
+
+		`CREATE TRIGGER IF NOT EXISTS activity_on_list_remove AFTER DELETE ON custom_list_items BEGIN
+			DELETE FROM activity_feed WHERE id = 'act-' || old.id;
+		END`,
+
 		// ===== Indexes =====
 		`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`,
 		`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`,
@@ -415,6 +472,109 @@ func (db *DB) Migrate() error {
 		}
 	}
 
+	// Additive column migrations for databases created by older versions
+	// (CREATE TABLE IF NOT EXISTS does not update existing tables).
+	if err := db.addColumnIfMissing("users", "avatar_url", "TEXT"); err != nil {
+		return err
+	}
+
+	// Older seeds stored random 8-character placeholders as MangaDex IDs. Real
+	// MangaDex IDs are 36-character UUIDs; clear the rest so the chapter sync
+	// looks the real ones up instead of sending invalid requests.
+	if _, err := db.Exec(`UPDATE manga_external_ids SET mangadex_id = NULL
+		WHERE mangadex_id IS NOT NULL AND length(mangadex_id) != 36`); err != nil {
+		return fmt.Errorf("clear placeholder mangadex ids: %w", err)
+	}
+
+	return db.fixMangaFTSTriggers()
+}
+
+// manga_fts is an external-content FTS5 table: it stores only the index and
+// reads column values from manga by rowid. Entries must therefore be keyed by
+// manga's rowid, and removed with the special 'delete' command (passing the
+// old values) rather than UPDATE/DELETE on the FTS table.
+const (
+	mangaFTSInsertTrigger = `CREATE TRIGGER IF NOT EXISTS manga_fts_insert AFTER INSERT ON manga BEGIN
+			INSERT INTO manga_fts(rowid, id, title, author, description)
+			VALUES (new.rowid, new.id, new.title, new.author, new.description);
+		END`
+
+	mangaFTSUpdateTrigger = `CREATE TRIGGER IF NOT EXISTS manga_fts_update AFTER UPDATE OF title, author, description ON manga BEGIN
+			INSERT INTO manga_fts(manga_fts, rowid, id, title, author, description)
+			VALUES ('delete', old.rowid, old.id, old.title, old.author, old.description);
+			INSERT INTO manga_fts(rowid, id, title, author, description)
+			VALUES (new.rowid, new.id, new.title, new.author, new.description);
+		END`
+
+	mangaFTSDeleteTrigger = `CREATE TRIGGER IF NOT EXISTS manga_fts_delete AFTER DELETE ON manga BEGIN
+			INSERT INTO manga_fts(manga_fts, rowid, id, title, author, description)
+			VALUES ('delete', old.rowid, old.id, old.title, old.author, old.description);
+		END`
+)
+
+// fixMangaFTSTriggers replaces the FTS triggers created by older versions,
+// which updated the FTS table directly (corrupting the index whenever a title,
+// author or description changed), and rebuilds the index from manga.
+// It is a no-op once the database has the current triggers.
+func (db *DB) fixMangaFTSTriggers() error {
+	var oldCount int
+	err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'trigger' AND name = 'manga_fts_update' AND sql LIKE '%UPDATE manga_fts SET%'`).Scan(&oldCount)
+	if err != nil {
+		return fmt.Errorf("inspect fts triggers: %w", err)
+	}
+	if oldCount == 0 {
+		return nil
+	}
+
+	statements := []string{
+		`DROP TRIGGER IF EXISTS manga_fts_insert`,
+		`DROP TRIGGER IF EXISTS manga_fts_update`,
+		`DROP TRIGGER IF EXISTS manga_fts_delete`,
+		mangaFTSInsertTrigger,
+		mangaFTSUpdateTrigger,
+		mangaFTSDeleteTrigger,
+		`INSERT INTO manga_fts(manga_fts) VALUES ('rebuild')`,
+	}
+	for _, stmt := range statements {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("fix fts triggers: %w", err)
+		}
+	}
+	return nil
+}
+
+// addColumnIfMissing adds a column to an existing table when it is absent.
+func (db *DB) addColumnIfMissing(table, column, colType string) error {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return fmt.Errorf("inspect table %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("scan table info for %s: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate table info for %s: %w", table, err)
+	}
+
+	if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, colType)); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
+	}
 	return nil
 }
 

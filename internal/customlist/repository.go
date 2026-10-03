@@ -3,325 +3,264 @@
 package customlist
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
-	"mangahub/pkg/database"
+	"mangahub/internal/manga"
 	"mangahub/pkg/models"
 
 	"github.com/google/uuid"
 )
 
+// ErrNotFound is returned when a list, or a manga in a list, does not exist.
+var ErrNotFound = errors.New("not found")
+
 // Repository handles custom list database operations
 type Repository struct {
-	db *database.DB
+	db *sql.DB
 }
 
 // NewRepository creates a new custom list repository
-func NewRepository(db *database.DB) *Repository {
+func NewRepository(db *sql.DB) *Repository {
 	return &Repository{db: db}
 }
 
-// CreateList creates a new custom list
-func (r *Repository) CreateList(list *models.CustomList) error {
-	if list.ID == "" {
-		list.ID = uuid.New().String()
-	}
+const listColumns = `l.id, l.user_id, l.name, COALESCE(l.description, ''), l.is_public, l.sort_order,
+	l.created_at, l.updated_at,
+	(SELECT COUNT(*) FROM custom_list_items i WHERE i.list_id = l.id)`
+
+func scanList(row interface{ Scan(...interface{}) error }) (*models.CustomList, error) {
+	var list models.CustomList
+	err := row.Scan(&list.ID, &list.UserID, &list.Name, &list.Description, &list.IsPublic,
+		&list.SortOrder, &list.CreatedAt, &list.UpdatedAt, &list.ItemCount)
+	return &list, err
+}
+
+// Create inserts a new list
+func (r *Repository) Create(ctx context.Context, list *models.CustomList) error {
+	list.ID = uuid.New().String()
 	list.CreatedAt = time.Now()
-	list.UpdatedAt = time.Now()
+	list.UpdatedAt = list.CreatedAt
 
-	query := `
+	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO custom_lists (id, user_id, name, description, is_public, sort_order, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-
-	_, err := r.db.Exec(query,
-		list.ID, list.UserID, list.Name, list.Description,
-		list.IsPublic, list.SortOrder,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		list.ID, list.UserID, list.Name, list.Description, list.IsPublic, list.SortOrder,
 		list.CreatedAt, list.UpdatedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create list: %w", err)
+		return fmt.Errorf("create list: %w", err)
 	}
 	return nil
 }
 
-// GetList retrieves a list by ID
-func (r *Repository) GetList(id string) (*models.CustomList, error) {
-	query := `
-		SELECT id, user_id, name, description, is_public, sort_order, created_at, updated_at
-		FROM custom_lists WHERE id = ?`
-
-	var list models.CustomList
-	var description sql.NullString
-	err := r.db.QueryRow(query, id).Scan(
-		&list.ID, &list.UserID, &list.Name, &description,
-		&list.IsPublic, &list.SortOrder,
-		&list.CreatedAt, &list.UpdatedAt,
-	)
+// Get retrieves a list by ID (ErrNotFound if it doesn't exist)
+func (r *Repository) Get(ctx context.Context, id string) (*models.CustomList, error) {
+	list, err := scanList(r.db.QueryRowContext(ctx, `SELECT `+listColumns+` FROM custom_lists l WHERE l.id = ?`, id))
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to get list: %w", err)
+		return nil, fmt.Errorf("get list: %w", err)
 	}
-
-	if description.Valid {
-		list.Description = description.String
-	}
-
-	return &list, nil
+	return list, nil
 }
 
-// GetUserLists retrieves all lists for a user
-func (r *Repository) GetUserLists(userID string) ([]models.CustomList, error) {
-	query := `
-		SELECT id, user_id, name, description, is_public, sort_order, created_at, updated_at
-		FROM custom_lists 
-		WHERE user_id = ?
-		ORDER BY sort_order ASC, name ASC`
-
-	rows, err := r.db.Query(query, userID)
+// ListByUser returns a user's lists, optionally only the public ones
+func (r *Repository) ListByUser(ctx context.Context, userID string, publicOnly bool) ([]models.CustomList, error) {
+	query := `SELECT ` + listColumns + ` FROM custom_lists l WHERE l.user_id = ?`
+	if publicOnly {
+		query += ` AND l.is_public = 1`
+	}
+	rows, err := r.db.QueryContext(ctx, query+` ORDER BY l.sort_order ASC, l.name ASC`, userID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query lists: %w", err)
+		return nil, fmt.Errorf("query lists: %w", err)
 	}
 	defer rows.Close()
 
-	var lists []models.CustomList
+	lists := []models.CustomList{}
 	for rows.Next() {
-		var list models.CustomList
-		var description sql.NullString
-		err := rows.Scan(
-			&list.ID, &list.UserID, &list.Name, &description,
-			&list.IsPublic, &list.SortOrder,
-			&list.CreatedAt, &list.UpdatedAt,
-		)
+		list, err := scanList(rows)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("scan list: %w", err)
 		}
-		if description.Valid {
-			list.Description = description.String
-		}
-		lists = append(lists, list)
+		lists = append(lists, *list)
 	}
-
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate lists: %w", err)
+	}
 	return lists, nil
 }
 
-// UpdateList updates a custom list
-func (r *Repository) UpdateList(list *models.CustomList) error {
+// Update saves a list's name, description and visibility
+func (r *Repository) Update(ctx context.Context, list *models.CustomList) error {
 	list.UpdatedAt = time.Now()
-
-	query := `
-		UPDATE custom_lists 
-		SET name = ?, description = ?, is_public = ?, sort_order = ?, updated_at = ?
-		WHERE id = ? AND user_id = ?`
-
-	result, err := r.db.Exec(query,
-		list.Name, list.Description, list.IsPublic, list.SortOrder,
-		list.UpdatedAt, list.ID, list.UserID,
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE custom_lists SET name = ?, description = ?, is_public = ?, updated_at = ?
+		WHERE id = ?`,
+		list.Name, list.Description, list.IsPublic, list.UpdatedAt, list.ID,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to update list: %w", err)
+		return fmt.Errorf("update list: %w", err)
 	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		return fmt.Errorf("list not found")
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
 	}
-
 	return nil
 }
 
-	// DeleteList deletes a custom list
-func (r *Repository) DeleteList(id, userID string) error {
-	result, err := r.db.Exec(`
-		DELETE FROM custom_lists 
-		WHERE id = ? AND user_id = ?`, id, userID)
+// Delete removes a list and (by cascade) its items
+func (r *Repository) Delete(ctx context.Context, id string) error {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM custom_lists WHERE id = ?`, id)
 	if err != nil {
-		return fmt.Errorf("failed to delete list: %w", err)
+		return fmt.Errorf("delete list: %w", err)
 	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		return fmt.Errorf("list not found")
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
 	}
-
 	return nil
 }
 
-// AddMangaToList adds a manga to a list
-func (r *Repository) AddMangaToList(listID, mangaID, userID, notes string) error {
-	// Verify list ownership
-	var ownerID string
-	err := r.db.QueryRow(`SELECT user_id FROM custom_lists WHERE id = ?`, listID).Scan(&ownerID)
-	if err != nil {
-		return fmt.Errorf("list not found")
-	}
-	if ownerID != userID {
-		return fmt.Errorf("unauthorized")
-	}
-
-	// Get max sort order
-	var maxOrder int
-	r.db.QueryRow(`SELECT COALESCE(MAX(sort_order), 0) FROM custom_list_items WHERE list_id = ?`, listID).Scan(&maxOrder)
-
-	id := uuid.New().String()
+// AddItem adds a manga to the end of a list. Adding a manga that is already
+// in the list only updates its notes.
+func (r *Repository) AddItem(ctx context.Context, listID, mangaID, notes string) (*models.CustomListItem, error) {
 	now := time.Now()
-
-	_, err = r.db.Exec(`
-		INSERT INTO custom_list_items (id, list_id, manga_id, sort_order, notes, added_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(list_id, manga_id) DO UPDATE SET notes = ?, sort_order = ?`,
-		id, listID, mangaID, maxOrder+1, notes, now, now, notes, maxOrder+1)
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO custom_list_items (id, list_id, manga_id, notes, sort_order, added_at)
+		VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM custom_list_items WHERE list_id = ?), ?)
+		ON CONFLICT(list_id, manga_id) DO UPDATE SET notes = excluded.notes`,
+		uuid.New().String(), listID, mangaID, notes, listID, now,
+	)
 	if err != nil {
-		return fmt.Errorf("failed to add manga: %w", err)
+		return nil, fmt.Errorf("add list item: %w", err)
 	}
+	r.touch(ctx, listID, now)
 
+	var item models.CustomListItem
+	var itemNotes sql.NullString
+	err = r.db.QueryRowContext(ctx, `
+		SELECT id, list_id, manga_id, notes, sort_order, added_at
+		FROM custom_list_items WHERE list_id = ? AND manga_id = ?`, listID, mangaID,
+	).Scan(&item.ID, &item.ListID, &item.MangaID, &itemNotes, &item.SortOrder, &item.AddedAt)
+	if err != nil {
+		return nil, fmt.Errorf("load list item: %w", err)
+	}
+	item.Notes = itemNotes.String
+	return &item, nil
+}
+
+// RemoveItem removes a manga from a list (ErrNotFound if it isn't in it)
+func (r *Repository) RemoveItem(ctx context.Context, listID, mangaID string) error {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM custom_list_items WHERE list_id = ? AND manga_id = ?`, listID, mangaID)
+	if err != nil {
+		return fmt.Errorf("remove list item: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	r.touch(ctx, listID, time.Now())
 	return nil
 }
 
-// RemoveMangaFromList removes a manga from a list
-func (r *Repository) RemoveMangaFromList(listID, mangaID, userID string) error {
-	// Verify list ownership
-	var ownerID string
-	err := r.db.QueryRow(`SELECT user_id FROM custom_lists WHERE id = ?`, listID).Scan(&ownerID)
-	if err != nil {
-		return fmt.Errorf("list not found")
-	}
-	if ownerID != userID {
-		return fmt.Errorf("unauthorized")
-	}
-
-	_, err = r.db.Exec(`DELETE FROM custom_list_items WHERE list_id = ? AND manga_id = ?`, listID, mangaID)
-	if err != nil {
-		return fmt.Errorf("failed to remove manga: %w", err)
-	}
-
-	return nil
-}
-
-// GetListItems retrieves all manga in a list with details
-func (r *Repository) GetListItems(listID string) ([]models.CustomListWithManga, error) {
-	query := `
-		SELECT 
-			cli.id, cli.list_id, cli.manga_id, cli.sort_order, cli.notes, cli.added_at, cli.created_at,
-			m.id, m.title, m.author, m.artist, m.description, m.cover_url, m.status, m.type,
-			m.total_chapters, m.average_rating, m.rating_count, m.year, m.created_at, m.updated_at
+// Items returns a list's manga in list order, with genres
+func (r *Repository) Items(ctx context.Context, listID string) ([]models.CustomListWithManga, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT
+			cli.id, cli.list_id, cli.manga_id, COALESCE(cli.notes, ''), cli.sort_order, cli.added_at,
+			m.id, m.title, COALESCE(m.author, ''), COALESCE(m.artist, ''), COALESCE(m.description, ''),
+			COALESCE(m.cover_url, ''), m.status, m.type,
+			m.total_chapters, m.average_rating, m.rating_count, COALESCE(m.year, 0), m.created_at, m.updated_at
 		FROM custom_list_items cli
 		JOIN manga m ON cli.manga_id = m.id
 		WHERE cli.list_id = ?
-		ORDER BY cli.sort_order ASC`
-
-	rows, err := r.db.Query(query, listID)
+		ORDER BY cli.sort_order ASC, cli.rowid ASC`, listID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query list items: %w", err)
+		return nil, fmt.Errorf("query list items: %w", err)
 	}
 	defer rows.Close()
 
-	var items []models.CustomListWithManga
+	items := []models.CustomListWithManga{}
 	for rows.Next() {
 		var item models.CustomListWithManga
-		var notes sql.NullString
-
-		err := rows.Scan(
-			&item.ID, &item.ListID, &item.MangaID, &item.SortOrder, &notes, &item.AddedAt,
+		if err := rows.Scan(
+			&item.ID, &item.ListID, &item.MangaID, &item.Notes, &item.SortOrder, &item.AddedAt,
 			&item.Manga.ID, &item.Manga.Title, &item.Manga.Author, &item.Manga.Artist,
 			&item.Manga.Description, &item.Manga.CoverURL, &item.Manga.Status, &item.Manga.Type,
 			&item.Manga.TotalChapters, &item.Manga.AverageRating, &item.Manga.RatingCount, &item.Manga.Year,
 			&item.Manga.CreatedAt, &item.Manga.UpdatedAt,
-		)
-		if err != nil {
-			continue
+		); err != nil {
+			return nil, fmt.Errorf("scan list item: %w", err)
 		}
-
-		if notes.Valid {
-			item.Notes = notes.String
-		}
-		// Genres are loaded separately via JOIN in service layer
-		item.Manga.Genres = []models.Genre{}
-
 		items = append(items, item)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate list items: %w", err)
+	}
+	rows.Close() // release the connection before the genre query
 
+	mangaList := make([]models.Manga, len(items))
+	for i := range items {
+		mangaList[i] = items[i].Manga
+	}
+	if err := manga.AttachGenres(ctx, r.db, mangaList); err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].Manga.Genres = mangaList[i].Genres
+	}
 	return items, nil
 }
 
-// GetListWithItems retrieves a list with all its items
-func (r *Repository) GetListWithItems(listID string) (*models.CustomListWithItems, error) {
-	list, err := r.GetList(listID)
-	if err != nil || list == nil {
-		return nil, err
-	}
-
-	items, err := r.GetListItems(listID)
+// Reorder sets the order of a list's items. itemIDs must contain exactly the
+// list's item IDs; otherwise nothing changes and false is returned.
+func (r *Repository) Reorder(ctx context.Context, listID string, itemIDs []string) (bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return false, fmt.Errorf("begin reorder: %w", err)
 	}
+	defer tx.Rollback()
 
-	return &models.CustomListWithItems{
-		CustomList: *list,
-		Items:      items,
-	}, nil
-}
-
-// ReorderListItems reorders items in a list
-func (r *Repository) ReorderListItems(listID, userID string, itemIDs []string) error {
-	// Verify list ownership
-	var ownerID string
-	err := r.db.QueryRow(`SELECT user_id FROM custom_lists WHERE id = ?`, listID).Scan(&ownerID)
-	if err != nil {
-		return fmt.Errorf("list not found")
-	}
-	if ownerID != userID {
-		return fmt.Errorf("unauthorized")
-	}
-
-	// Update sort orders
-	for i, itemID := range itemIDs {
-		_, err := r.db.Exec(`
-			UPDATE custom_list_items SET sort_order = ? WHERE id = ? AND list_id = ?`,
-			i, itemID, listID)
-		if err != nil {
-			return fmt.Errorf("failed to update order: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// EnsureDefaultLists creates default lists for a user if they don't exist
-func (r *Repository) EnsureDefaultLists(userID string) error {
-	// Check if default lists exist
 	var count int
-	r.db.QueryRow(`SELECT COUNT(*) FROM custom_lists WHERE user_id = ? AND is_default = 1`, userID).Scan(&count)
-	if count > 0 {
-		return nil // Already have default lists
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM custom_list_items WHERE list_id = ?`, listID).Scan(&count); err != nil {
+		return false, fmt.Errorf("count list items: %w", err)
+	}
+	seen := make(map[string]bool, len(itemIDs))
+	for _, id := range itemIDs {
+		seen[id] = true
+	}
+	if len(itemIDs) != count || len(seen) != count {
+		return false, nil
 	}
 
-	defaultLists := []struct {
-		Name      string
-		Emoji     string
-		SortOrder int
-	}{
-		{"Favorites", "❤️", 0},
-		{"Plan to Read", "📋", 1},
-		{"Top 10", "🏆", 2},
-	}
-
-	for i, dl := range defaultLists {
-		list := &models.CustomList{
-			ID:          uuid.New().String(),
-			UserID:      userID,
-			Name:        dl.Name,
-			Description: "",
-			IsPublic:    false,
-			SortOrder:   i,
+	for i, id := range itemIDs {
+		res, err := tx.ExecContext(ctx, `UPDATE custom_list_items SET sort_order = ? WHERE id = ? AND list_id = ?`, i, id, listID)
+		if err != nil {
+			return false, fmt.Errorf("reorder: %w", err)
 		}
-		if err := r.CreateList(list); err != nil {
-			return err
+		if n, _ := res.RowsAffected(); n == 0 {
+			return false, nil // an ID from another list
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE custom_lists SET updated_at = ? WHERE id = ?`, time.Now(), listID); err != nil {
+		return false, fmt.Errorf("reorder: %w", err)
+	}
+	return true, tx.Commit()
+}
 
-	return nil
+// MangaExists reports whether the manga exists
+func (r *Repository) MangaExists(ctx context.Context, mangaID string) (bool, error) {
+	var one int
+	err := r.db.QueryRowContext(ctx, "SELECT 1 FROM manga WHERE id = ?", mangaID).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// touch bumps a list's updated_at after its items change
+func (r *Repository) touch(ctx context.Context, listID string, at time.Time) {
+	_, _ = r.db.ExecContext(ctx, `UPDATE custom_lists SET updated_at = ? WHERE id = ?`, at, listID)
 }

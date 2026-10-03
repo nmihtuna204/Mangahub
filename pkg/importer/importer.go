@@ -99,8 +99,8 @@ func ConvertToManga(ext models.ExternalMangaData) models.Manga {
 		Type:          mangaType,
 		Genres:        []models.Genre{}, // Populated separately via manga_genres table
 		TotalChapters: ext.ChapterCount,
-		AverageRating: 0,  // Auto-calculated via triggers
-		RatingCount:   0,  // Auto-calculated via triggers
+		AverageRating: 0, // Auto-calculated via triggers
+		RatingCount:   0, // Auto-calculated via triggers
 		Year:          ext.Year,
 		CreatedAt:     now,
 		UpdatedAt:     now,
@@ -120,10 +120,9 @@ func normalizeStatus(status string) string {
 	case "cancelled", "canceled", "discontinued":
 		return "cancelled"
 	default:
-		if status == "" {
-			return "unknown"
-		}
-		return status
+		// Anything else ("upcoming", "not yet published", "") must still satisfy
+		// the manga.status CHECK constraint, or the insert fails
+		return "ongoing"
 	}
 }
 
@@ -175,6 +174,11 @@ func (i *Importer) ImportOne(ctx context.Context, ext models.ExternalMangaData) 
 	if err := i.saveExternalMapping(ctx, manga.ID, ext); err != nil {
 		// Non-fatal, just log
 		fmt.Printf("Warning: failed to save external mapping: %v\n", err)
+	}
+
+	// Link genres so imported manga show up in genre browsing/filtering
+	if err := i.saveGenres(ctx, manga.ID, ext.Genres); err != nil {
+		fmt.Printf("Warning: failed to save genres for '%s': %v\n", manga.Title, err)
 	}
 
 	return &manga, nil
@@ -242,47 +246,87 @@ func (i *Importer) updateManga(ctx context.Context, m models.Manga) error {
 	return err
 }
 
-// saveExternalMapping saves the external ID mapping for cross-referencing
+// saveExternalMapping saves the external ID mapping for cross-referencing.
+// manga_external_ids has one row per manga (manga_id is the primary key), with
+// a column per source, so a manga imported from several sources keeps every ID.
 func (i *Importer) saveExternalMapping(ctx context.Context, mangaID string, ext models.ExternalMangaData) error {
-	// Check if mapping exists
-	var existingID string
-	err := i.db.QueryRowContext(ctx,
-		"SELECT id FROM manga_external_ids WHERE manga_id = ? AND primary_source = ?",
-		mangaID, ext.Source,
-	).Scan(&existingID)
+	var mangadexID interface{}
+	var malID, anilistID int
+	switch ext.Source {
+	case models.SourceMangaDex:
+		mangadexID = sqlNullString(true, ext.ExternalID)
+	case models.SourceJikan:
+		fmt.Sscanf(ext.ExternalID, "%d", &malID)
+	case models.SourceAniList:
+		fmt.Sscanf(ext.ExternalID, "%d", &anilistID)
+	}
 
 	now := time.Now()
-
-	if err == sql.ErrNoRows {
-		// Insert new mapping
-		id := uuid.New().String()
-		var malID int
-		if ext.Source == models.SourceJikan {
-			// Parse MAL ID from external ID
-			fmt.Sscanf(ext.ExternalID, "%d", &malID)
-		}
-
-		_, err = i.db.ExecContext(ctx, `
-			INSERT INTO manga_external_ids (id, manga_id, mangadex_id, mal_id, primary_source, last_synced_at, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, mangaID,
-			sqlNullString(ext.Source == models.SourceMangaDex, ext.ExternalID),
-			sqlNullInt(malID),
-			ext.Source, now, now, now,
-		)
-		return err
-	}
-
-	if err != nil {
-		return err
-	}
-
-	// Update existing mapping
-	_, err = i.db.ExecContext(ctx,
-		"UPDATE manga_external_ids SET last_synced_at = ?, updated_at = ? WHERE id = ?",
-		now, now, existingID,
+	_, err := i.db.ExecContext(ctx, `
+		INSERT INTO manga_external_ids
+			(manga_id, mangadex_id, mal_id, anilist_id, primary_source, last_synced_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(manga_id) DO UPDATE SET
+			mangadex_id    = COALESCE(excluded.mangadex_id, mangadex_id),
+			mal_id         = COALESCE(excluded.mal_id, mal_id),
+			anilist_id     = COALESCE(excluded.anilist_id, anilist_id),
+			last_synced_at = excluded.last_synced_at,
+			updated_at     = excluded.updated_at`,
+		mangaID, mangadexID, sqlNullInt(malID), sqlNullInt(anilistID), ext.Source, now, now, now,
 	)
 	return err
+}
+
+// saveGenres links the manga to its genres, creating genres that don't exist yet.
+func (i *Importer) saveGenres(ctx context.Context, mangaID string, names []string) error {
+	now := time.Now()
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		slug := slugify(name)
+		if slug == "" {
+			continue
+		}
+
+		// genres.name and genres.slug are both UNIQUE; reuse whichever matches
+		if _, err := i.db.ExecContext(ctx,
+			"INSERT OR IGNORE INTO genres (id, name, slug, created_at) VALUES (?, ?, ?, ?)",
+			uuid.New().String(), name, slug, now,
+		); err != nil {
+			return fmt.Errorf("insert genre %q: %w", name, err)
+		}
+		var genreID string
+		if err := i.db.QueryRowContext(ctx,
+			"SELECT id FROM genres WHERE slug = ? OR LOWER(name) = LOWER(?) LIMIT 1", slug, name,
+		).Scan(&genreID); err != nil {
+			return fmt.Errorf("find genre %q: %w", name, err)
+		}
+
+		if _, err := i.db.ExecContext(ctx,
+			"INSERT OR IGNORE INTO manga_genres (id, manga_id, genre_id, created_at) VALUES (?, ?, ?, ?)",
+			uuid.New().String(), mangaID, genreID, now,
+		); err != nil {
+			return fmt.Errorf("link genre %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// slugify turns a genre name into the slug format used by the seed data
+// ("Slice of Life" -> "slice-of-life", "Sci-Fi" -> "sci-fi").
+func slugify(name string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			dash = false
+		case b.Len() > 0 && !dash:
+			b.WriteByte('-')
+			dash = true
+		}
+	}
+	return strings.TrimSuffix(b.String(), "-")
 }
 
 // Helper functions for SQL null handling

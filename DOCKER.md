@@ -43,7 +43,9 @@ docker-compose up -d
 
 ## 🔧 Configuration
 
-Config file được mount từ `./configs/development.yaml`. Có thể sửa file này để thay đổi cấu hình.
+Config file được mount từ `./configs/development.yaml`. Có thể sửa file này để thay đổi cấu hình. Docker Compose ghi đè địa chỉ của bridge bằng biến môi trường (`TCP_HOST=tcp-server`, ...), để API server gọi sang các container khác.
+
+**Lưu ý:** `api-server` và `grpc-server` mount `./data`, nên Docker dùng **chung file `data/mangahub.db`** với khi chạy bằng `go run` trên máy. Muốn thử Docker mà không đụng dữ liệu hiện có, hãy chạy từ một bản clone khác của repo.
 
 ## 📊 Health Checks
 
@@ -77,8 +79,10 @@ docker-compose down -v
 # Exec vào container
 docker exec -it mangahub-api sh
 
-# Run tests trong container
-docker exec -it mangahub-api go test ./...
+# Tests chạy trên máy (image runtime không có Go). Bộ live test và các
+# script test-*.ps1 dùng được với các container đang chạy:
+MANGAHUB_LIVE=1 go test -run TestLive ./test/
+bash test/load_test.sh
 
 # Check database
 docker exec -it mangahub-api ls -la /app/data
@@ -98,15 +102,17 @@ Sau khi start:
 
 ### Build for Production
 
+Dùng `configs/production.yaml` qua biến `MANGAHUB_CONFIG`. File này đặt DB ở `/var/lib/mangahub` và log ở `/var/log/mangahub` (không có sẵn trong image, nên ghi đè bằng `DATABASE_PATH` và `LOGGING_OUTPUT=stdout` như dưới). Truyền secret bằng biến môi trường (Viper không tự thay `${JWT_SECRET}` trong file YAML, nhưng biến `JWT_SECRET` ghi đè `jwt.secret`):
+
 ```bash
-# Set production config
-cp configs/production.yaml.example configs/production.yaml
-
-# Build with production flag
-docker-compose -f docker-compose.prod.yml build
-
-# Run in production mode
-docker-compose -f docker-compose.prod.yml up -d
+docker build -t mangahub:latest .
+docker run -d -p 8080:8080 \
+  -e MANGAHUB_CONFIG=/app/configs/production.yaml \
+  -e JWT_SECRET=<secret-dài-và-ngẫu-nhiên> \
+  -e DATABASE_PATH=/app/data/mangahub.db \
+  -e LOGGING_OUTPUT=stdout \
+  -v mangahub-data:/app/data \
+  --name mangahub-api mangahub:latest /app/api-server
 ```
 
 ### Using Standalone Dockerfile

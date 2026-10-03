@@ -5,8 +5,10 @@ package network
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -25,8 +27,34 @@ type ChatMessageMsg struct {
 	UserID    string    `json:"user_id"`
 	Username  string    `json:"username"`
 	Content   string    `json:"content"`
-	Type      string    `json:"type"` // text, join, leave, system
-	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"` // message, join, leave, system
+	Timestamp time.Time `json:"-"`
+}
+
+// UnmarshalJSON accepts the server's unix-seconds timestamp as well as RFC 3339 strings.
+func (m *ChatMessageMsg) UnmarshalJSON(data []byte) error {
+	type plain ChatMessageMsg
+	aux := struct {
+		*plain
+		Timestamp json.RawMessage `json:"timestamp"`
+	}{plain: (*plain)(m)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	m.Timestamp = time.Now()
+	var secs int64
+	var str string
+	switch {
+	case len(aux.Timestamp) == 0:
+	case json.Unmarshal(aux.Timestamp, &secs) == nil && secs > 0:
+		m.Timestamp = time.Unix(secs, 0)
+	case json.Unmarshal(aux.Timestamp, &str) == nil:
+		if t, err := time.Parse(time.RFC3339, str); err == nil {
+			m.Timestamp = t
+		}
+	}
+	return nil
 }
 
 // WSConnectedMsg signals successful WebSocket connection
@@ -34,7 +62,7 @@ type WSConnectedMsg struct {
 	RoomID string
 }
 
-// WSDisconnectedMsg signals WebSocket disconnection
+// WSDisconnectedMsg signals an unexpected WebSocket disconnection
 type WSDisconnectedMsg struct {
 	Reason string
 }
@@ -68,18 +96,38 @@ type JoinRoomMsg struct {
 // WEBSOCKET CLIENT
 // =====================================
 
-// WSClient manages WebSocket connection for Bubble Tea
-type WSClient struct {
+// session is one live WebSocket connection with its own channels, so loops
+// and listeners from an old connection can never mix with a new one.
+type session struct {
 	conn     *websocket.Conn
+	roomID   string
 	send     chan []byte
 	receive  chan []byte
-	done     chan struct{}
-	mu       sync.RWMutex
-	url      string
-	token    string
-	roomID   string
-	connected bool
-	
+	done     chan struct{} // closed when we close the session on purpose
+	lost     chan struct{} // closed when the connection drops by itself
+	stopOnce sync.Once
+}
+
+func (s *session) stop() {
+	s.stopOnce.Do(func() {
+		close(s.done)
+		_ = s.conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+		_ = s.conn.Close()
+	})
+}
+
+// ErrReconnectGaveUp is returned (inside WSErrorMsg) once reconnection attempts are exhausted
+var ErrReconnectGaveUp = errors.New("max reconnection attempts reached")
+
+// WSClient manages WebSocket connection for Bubble Tea
+type WSClient struct {
+	mu      sync.Mutex
+	current *session
+	url     string
+	token   string
+	roomID  string
+
 	// Reconnection
 	reconnectAttempt int
 	maxReconnect     int
@@ -90,9 +138,6 @@ type WSClient struct {
 // NewWSClient creates a new WebSocket client
 func NewWSClient() *WSClient {
 	return &WSClient{
-		send:         make(chan []byte, 256),
-		receive:      make(chan []byte, 256),
-		done:         make(chan struct{}),
 		maxReconnect: 5,
 		baseBackoff:  2 * time.Second,
 		maxBackoff:   30 * time.Second,
@@ -101,105 +146,95 @@ func NewWSClient() *WSClient {
 
 // IsConnected returns connection status (thread-safe)
 func (c *WSClient) IsConnected() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.connected
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.current != nil
 }
 
 // CurrentRoom returns the current room ID
 func (c *WSClient) CurrentRoom() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.roomID
+}
+
+// IsConnectedTo reports whether there is a live connection to roomID
+func (c *WSClient) IsConnectedTo(roomID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.current != nil && c.current.roomID == roomID
 }
 
 // =====================================
 // BUBBLE TEA COMMANDS
 // =====================================
 
-// Connect establishes WebSocket connection - returns tea.Cmd
+// Connect establishes a WebSocket connection to roomID, replacing any existing one - returns tea.Cmd
 func (c *WSClient) Connect(baseURL, token, roomID string) tea.Cmd {
 	return func() tea.Msg {
 		c.mu.Lock()
-		c.url = baseURL
-		c.token = token
-		c.roomID = roomID
+		c.url, c.token, c.roomID = baseURL, token, roomID
+		c.reconnectAttempt = 0
+		old := c.current
+		c.current = nil
 		c.mu.Unlock()
-
-		// Build WebSocket URL with auth
-		wsURL := fmt.Sprintf("%s/ws/chat?room_id=%s", baseURL, roomID)
-		
-		// Set up headers with JWT token
-		header := http.Header{}
-		if token != "" {
-			header.Set("Authorization", "Bearer "+token)
+		if old != nil {
+			old.stop()
 		}
 
-		// Dial WebSocket
-		conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
-		if err != nil {
+		if err := c.dial(baseURL, token, roomID); err != nil {
 			return WSErrorMsg{Err: fmt.Errorf("failed to connect: %w", err)}
 		}
-
-		c.mu.Lock()
-		c.conn = conn
-		c.connected = true
-		c.reconnectAttempt = 0
-		c.mu.Unlock()
-
-		// Start read/write loops
-		go c.readLoop()
-		go c.writeLoop()
-
 		return WSConnectedMsg{RoomID: roomID}
 	}
 }
 
-// Disconnect closes the WebSocket connection
+// Disconnect closes the WebSocket connection on purpose (e.g. logout) - returns tea.Cmd
 func (c *WSClient) Disconnect() tea.Cmd {
 	return func() tea.Msg {
 		c.mu.Lock()
-		defer c.mu.Unlock()
-
-		if c.conn != nil {
-			// Send close message
-			c.conn.WriteMessage(websocket.CloseMessage, 
-				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-			c.conn.Close()
-			c.conn = nil
+		old := c.current
+		c.current = nil
+		c.roomID = ""
+		c.mu.Unlock()
+		if old != nil {
+			old.stop()
 		}
-		c.connected = false
-		close(c.done)
-
-		return WSDisconnectedMsg{Reason: "user disconnect"}
+		return nil
 	}
 }
 
-// ListenForMessages is a Bubble Tea subscription that listens for incoming messages
-// It blocks waiting for a message, then returns it and re-subscribes
+// ListenForMessages is a Bubble Tea subscription that waits for the next
+// message on the current connection. It returns nil (no message) if that
+// connection is closed on purpose, and WSDisconnectedMsg if it drops.
 func (c *WSClient) ListenForMessages() tea.Cmd {
+	c.mu.Lock()
+	s := c.current
+	c.mu.Unlock()
+	if s == nil {
+		return nil
+	}
+
 	return func() tea.Msg {
 		select {
-		case data, ok := <-c.receive:
-			if !ok {
-				// Channel closed, connection lost
-				return WSDisconnectedMsg{Reason: "connection closed"}
-			}
-
-			// Parse the message
+		case data := <-s.receive:
 			var msg ChatMessageMsg
 			if err := json.Unmarshal(data, &msg); err != nil {
-				// Try to handle as raw text
-				msg = ChatMessageMsg{
-					Content:   string(data),
-					Type:      "text",
-					Timestamp: time.Now(),
-				}
+				msg = ChatMessageMsg{Content: string(data), Type: "message", Timestamp: time.Now()}
+			}
+			if msg.RoomID == "" {
+				msg.RoomID = s.roomID
 			}
 			return msg
-
-		case <-c.done:
-			return WSDisconnectedMsg{Reason: "client shutdown"}
+		case <-s.lost:
+			c.mu.Lock()
+			if c.current == s {
+				c.current = nil
+			}
+			c.mu.Unlock()
+			return WSDisconnectedMsg{Reason: "connection lost"}
+		case <-s.done:
+			return nil
 		}
 	}
 }
@@ -207,28 +242,25 @@ func (c *WSClient) ListenForMessages() tea.Cmd {
 // SendMessage sends a chat message through the WebSocket
 func (c *WSClient) SendMessage(roomID, content string) tea.Cmd {
 	return func() tea.Msg {
-		c.mu.RLock()
-		connected := c.connected
-		c.mu.RUnlock()
+		c.mu.Lock()
+		s := c.current
+		c.mu.Unlock()
 
-		if !connected {
+		if s == nil {
 			return WSErrorMsg{Err: fmt.Errorf("not connected")}
 		}
 
-		msg := map[string]interface{}{
+		data, err := json.Marshal(map[string]interface{}{
 			"room_id": roomID,
 			"content": content,
-			"type":    "text",
-		}
-
-		data, err := json.Marshal(msg)
+			"type":    "message",
+		})
 		if err != nil {
 			return WSErrorMsg{Err: err}
 		}
 
 		select {
-		case c.send <- data:
-			// Message queued successfully
+		case s.send <- data:
 			return nil
 		default:
 			return WSErrorMsg{Err: fmt.Errorf("send buffer full")}
@@ -240,52 +272,70 @@ func (c *WSClient) SendMessage(roomID, content string) tea.Cmd {
 func (c *WSClient) Reconnect() tea.Cmd {
 	return func() tea.Msg {
 		c.mu.Lock()
+		if c.current != nil || c.roomID == "" {
+			// Already reconnected, or the user left chat / logged out
+			c.mu.Unlock()
+			return nil
+		}
 		c.reconnectAttempt++
 		attempt := c.reconnectAttempt
-		
 		if attempt > c.maxReconnect {
 			c.mu.Unlock()
-			return WSErrorMsg{Err: fmt.Errorf("max reconnection attempts reached")}
+			return WSErrorMsg{Err: ErrReconnectGaveUp}
 		}
 
-		// Calculate backoff with exponential increase
 		backoff := c.baseBackoff * time.Duration(1<<uint(attempt-1))
 		if backoff > c.maxBackoff {
 			backoff = c.maxBackoff
 		}
-
-		url := c.url
-		token := c.token
-		roomID := c.roomID
+		baseURL, token, roomID := c.url, c.token, c.roomID
 		c.mu.Unlock()
 
-		// Wait before reconnecting
 		time.Sleep(backoff)
 
-		// Attempt reconnection
-		wsURL := fmt.Sprintf("%s/ws/chat?room_id=%s", url, roomID)
-		header := http.Header{}
-		if token != "" {
-			header.Set("Authorization", "Bearer "+token)
-		}
-
-		conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
-		if err != nil {
+		if err := c.dial(baseURL, token, roomID); err != nil {
 			return WSReconnectingMsg{Attempt: attempt, MaxWait: backoff * 2}
 		}
-
 		c.mu.Lock()
-		c.conn = conn
-		c.connected = true
 		c.reconnectAttempt = 0
-		c.done = make(chan struct{}) // Reset done channel
 		c.mu.Unlock()
-
-		go c.readLoop()
-		go c.writeLoop()
-
 		return WSConnectedMsg{RoomID: roomID}
 	}
+}
+
+// dial opens a connection and installs it as the current session
+func (c *WSClient) dial(baseURL, token, roomID string) error {
+	wsURL := fmt.Sprintf("%s/ws/chat?room_id=%s", baseURL, url.QueryEscape(roomID))
+	header := http.Header{}
+	if token != "" {
+		header.Set("Authorization", "Bearer "+token)
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		return err
+	}
+
+	s := &session{
+		conn:    conn,
+		roomID:  roomID,
+		send:    make(chan []byte, 256),
+		receive: make(chan []byte, 256),
+		done:    make(chan struct{}),
+		lost:    make(chan struct{}),
+	}
+
+	c.mu.Lock()
+	old := c.current
+	c.current = s
+	c.mu.Unlock()
+	if old != nil {
+		old.stop()
+	}
+
+	go c.readLoop(s)
+	go c.writeLoop(s)
+	return nil
 }
 
 // =====================================
@@ -293,82 +343,48 @@ func (c *WSClient) Reconnect() tea.Cmd {
 // =====================================
 
 // readLoop runs in a goroutine, reading messages from WebSocket
-func (c *WSClient) readLoop() {
-	defer func() {
-		c.mu.Lock()
-		c.connected = false
-		c.mu.Unlock()
-	}()
-
+func (c *WSClient) readLoop(s *session) {
 	for {
-		c.mu.RLock()
-		conn := c.conn
-		c.mu.RUnlock()
-
-		if conn == nil {
-			return
-		}
-
-		_, message, err := conn.ReadMessage()
+		_, message, err := s.conn.ReadMessage()
 		if err != nil {
-			// Connection error - signal disconnect
 			select {
-			case c.receive <- []byte(`{"type":"error","content":"connection lost"}`):
+			case <-s.done: // closed on purpose
 			default:
+				close(s.lost)
 			}
 			return
 		}
 
 		select {
-		case c.receive <- message:
-		case <-c.done:
+		case s.receive <- message:
+		case <-s.done:
 			return
-		default:
-			// Buffer full, drop message (log in production)
 		}
 	}
 }
 
 // writeLoop runs in a goroutine, writing messages to WebSocket
-func (c *WSClient) writeLoop() {
+func (c *WSClient) writeLoop(s *session) {
 	ticker := time.NewTicker(54 * time.Second) // Ping interval
 	defer ticker.Stop()
 
 	for {
 		select {
-		case message, ok := <-c.send:
-			if !ok {
-				return
-			}
-
-			c.mu.RLock()
-			conn := c.conn
-			c.mu.RUnlock()
-
-			if conn == nil {
-				return
-			}
-
-			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
+		case message := <-s.send:
+			_ = s.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := s.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				_ = s.conn.Close() // readLoop notices and reports the loss
 				return
 			}
 
 		case <-ticker.C:
-			c.mu.RLock()
-			conn := c.conn
-			c.mu.RUnlock()
-
-			if conn == nil {
+			_ = s.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := s.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				_ = s.conn.Close()
 				return
 			}
 
-			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				return
-			}
-
-		case <-c.done:
+		case <-s.done:
 			return
 		}
 	}

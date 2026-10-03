@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"mangahub/pkg/logger"
 	"mangahub/pkg/models"
 )
 
@@ -33,8 +34,9 @@ func (h *Handler) GetTopRatedManga(c *gin.Context) {
 
 	response, err := h.svc.GetTopRatedManga(c.Request.Context(), limit, offset)
 	if err != nil {
+		logger.Errorf("leaderboard: %v", err) // details stay in the log, not the response
 		c.JSON(http.StatusInternalServerError,
-			models.NewErrorResponse(models.ErrCodeInternal, "failed to get leaderboard", map[string]interface{}{"error": err.Error()}))
+			models.NewErrorResponse(models.ErrCodeInternal, "failed to get leaderboard", nil))
 		return
 	}
 
@@ -51,8 +53,9 @@ func (h *Handler) GetMostActiveUsers(c *gin.Context) {
 
 	response, err := h.svc.GetMostActiveUsers(c.Request.Context(), limit, offset)
 	if err != nil {
+		logger.Errorf("leaderboard: %v", err) // details stay in the log, not the response
 		c.JSON(http.StatusInternalServerError,
-			models.NewErrorResponse(models.ErrCodeInternal, "failed to get leaderboard", map[string]interface{}{"error": err.Error()}))
+			models.NewErrorResponse(models.ErrCodeInternal, "failed to get leaderboard", nil))
 		return
 	}
 
@@ -70,8 +73,9 @@ func (h *Handler) GetTrendingManga(c *gin.Context) {
 
 	response, err := h.svc.GetTrendingManga(c.Request.Context(), limit, offset, days)
 	if err != nil {
+		logger.Errorf("leaderboard: %v", err) // details stay in the log, not the response
 		c.JSON(http.StatusInternalServerError,
-			models.NewErrorResponse(models.ErrCodeInternal, "failed to get leaderboard", map[string]interface{}{"error": err.Error()}))
+			models.NewErrorResponse(models.ErrCodeInternal, "failed to get leaderboard", nil))
 		return
 	}
 

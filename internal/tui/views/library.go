@@ -13,8 +13,11 @@ package views
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -38,7 +41,7 @@ const (
 )
 
 var tabNames = []string{"Reading", "Plan", "Completed", "On-Hold", "Dropped"}
-var tabStatuses = []string{"reading", "planning", "completed", "on_hold", "dropped"}
+var tabStatuses = []string{"reading", "plan_to_read", "completed", "on_hold", "dropped"}
 
 // =====================================
 // LIBRARY MODEL
@@ -64,7 +67,6 @@ type LibraryModel struct {
 
 	// Selection
 	selectedIndex int
-	cursor        int
 
 	// Scroll offset
 	scrollOffset int
@@ -78,6 +80,11 @@ type LibraryModel struct {
 
 	// Error
 	lastError error
+
+	// Modals: confirm before removing, and set an exact chapter
+	confirmRemove *api.LibraryEntry
+	editing       *api.LibraryEntry
+	chapterInput  textinput.Model
 
 	// API client
 	client *api.Client
@@ -107,14 +114,39 @@ func NewLibrary() LibraryModel {
 	s.Spinner = spinner.Dot
 	s.Style = styles.DefaultTheme.Spinner
 
+	ti := textinput.New()
+	ti.Placeholder = "chapter"
+	ti.CharLimit = 6
+	ti.Width = 8
+
 	return LibraryModel{
-		theme:       styles.DefaultTheme,
-		spinner:     s,
-		client:      api.GetClient(),
-		loading:     true,
-		activeTab:   TabReading,
-		visibleRows: 10,
+		theme:        styles.DefaultTheme,
+		spinner:      s,
+		client:       api.GetClient(),
+		loading:      true,
+		activeTab:    TabReading,
+		visibleRows:  10,
+		chapterInput: ti,
 	}
+}
+
+// IsInputFocused reports whether a modal (remove confirmation or chapter
+// input) is open, so the app sends keys here instead of to global shortcuts.
+func (m LibraryModel) IsInputFocused() bool {
+	return m.confirmRemove != nil || m.editing != nil
+}
+
+// HasModal reports whether a modal is open (Esc should close it, not leave the view).
+func (m LibraryModel) HasModal() bool {
+	return m.IsInputFocused()
+}
+
+// CloseModal cancels the open modal.
+func (m LibraryModel) CloseModal() LibraryModel {
+	m.confirmRemove = nil
+	m.editing = nil
+	m.chapterInput.Blur()
+	return m
 }
 
 // =====================================
@@ -156,6 +188,41 @@ func (m LibraryModel) Update(msg tea.Msg) (LibraryModel, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		// An open modal takes every key
+		if m.confirmRemove != nil {
+			switch msg.String() {
+			case "y", "Y", "enter":
+				entry := *m.confirmRemove
+				m = m.CloseModal()
+				return m, m.removeFromLibrary(entry.MangaID)
+			case "n", "N", "esc":
+				m = m.CloseModal()
+			}
+			return m, nil
+		}
+		if m.editing != nil {
+			switch msg.String() {
+			case "enter":
+				chapter, err := strconv.Atoi(m.chapterInput.Value())
+				if err != nil {
+					return m, nil // empty input: keep the modal open
+				}
+				entry := *m.editing
+				m = m.CloseModal()
+				return m, m.setChapter(entry.MangaID, chapter)
+			case "esc":
+				m = m.CloseModal()
+				return m, nil
+			}
+			// Digits only (textinput's Validate flags bad input but still inserts it)
+			if msg.Type == tea.KeyRunes && strings.Trim(string(msg.Runes), "0123456789") != "" {
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.chapterInput, cmd = m.chapterInput.Update(msg)
+			return m, cmd
+		}
+
 		switch msg.String() {
 		case "j", "down":
 			m.selectedIndex++
@@ -197,16 +264,36 @@ func (m LibraryModel) Update(msg tea.Msg) (LibraryModel, tea.Cmd) {
 			return m, m.loadLibrary
 
 		case "d":
-			// Delete (would trigger confirmation)
+			// Remove from library, after a y/n confirmation
 			if m.selectedIndex < len(m.filteredEntries) {
-				// TODO: Implement delete confirmation
+				entry := m.filteredEntries[m.selectedIndex]
+				m.confirmRemove = &entry
 			}
 
 		case "u":
-			// Update progress
+			// Set the current chapter (prefilled with the next one)
 			if m.selectedIndex < len(m.filteredEntries) {
 				entry := m.filteredEntries[m.selectedIndex]
-				return m, m.updateProgress(entry.MangaID)
+				m.editing = &entry
+				m.chapterInput.SetValue(strconv.Itoa(entry.CurrentChapter + 1))
+				m.chapterInput.CursorEnd()
+				return m, m.chapterInput.Focus()
+			}
+
+		case "+", "=":
+			// Quick: one chapter forward
+			if m.selectedIndex < len(m.filteredEntries) {
+				entry := m.filteredEntries[m.selectedIndex]
+				return m, m.setChapter(entry.MangaID, entry.CurrentChapter+1)
+			}
+
+		case "-":
+			// Quick: one chapter back
+			if m.selectedIndex < len(m.filteredEntries) {
+				entry := m.filteredEntries[m.selectedIndex]
+				if entry.CurrentChapter > 0 {
+					return m, m.setChapter(entry.MangaID, entry.CurrentChapter-1)
+				}
 			}
 
 		case "f":
@@ -227,7 +314,7 @@ func (m LibraryModel) Update(msg tea.Msg) (LibraryModel, tea.Cmd) {
 			// Mark as Planning
 			if m.selectedIndex < len(m.filteredEntries) {
 				entry := m.filteredEntries[m.selectedIndex]
-				return m, m.changeStatus(entry.MangaID, "planning")
+				return m, m.changeStatus(entry.MangaID, "plan_to_read")
 			}
 
 		case "3":
@@ -322,7 +409,30 @@ func (m LibraryModel) View() string {
 	// Render footer hints
 	footer := m.renderFooter()
 
+	if modal := m.renderModal(); modal != "" {
+		return lipgloss.JoinVertical(lipgloss.Left, tabs, content, modal, footer)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, tabs, content, footer)
+}
+
+// renderModal renders the remove confirmation or the chapter input, if open
+func (m LibraryModel) renderModal() string {
+	box := m.theme.Container.BorderForeground(styles.ColorWarning).Width(m.width - 4)
+	switch {
+	case m.confirmRemove != nil:
+		return box.Render(fmt.Sprintf("Remove %s from your library?  %s  %s",
+			m.theme.Title.Render(m.confirmRemove.Manga.Title),
+			styles.RenderKeyHint("y", "Remove"), styles.RenderKeyHint("n", "Keep")))
+	case m.editing != nil:
+		of := ""
+		if m.editing.Manga.TotalChapters > 0 {
+			of = fmt.Sprintf(" of %d", m.editing.Manga.TotalChapters)
+		}
+		return box.Render(fmt.Sprintf("Chapter for %s%s: %s  %s  %s",
+			m.theme.Title.Render(m.editing.Manga.Title), of, m.chapterInput.View(),
+			styles.RenderKeyHint("Enter", "Save"), styles.RenderKeyHint("Esc", "Cancel")))
+	}
+	return ""
 }
 
 // =====================================
@@ -462,8 +572,9 @@ func (m LibraryModel) renderEntryRow(index int, entry api.LibraryEntry) string {
 func (m LibraryModel) renderFooter() string {
 	hints := []string{
 		styles.RenderKeyHint("Enter", "Details"),
-		styles.RenderKeyHint("u", "Update"),
-		styles.RenderKeyHint("d", "Delete"),
+		styles.RenderKeyHint("u", "Set chapter"),
+		styles.RenderKeyHint("+/-", "Chapter ±1"),
+		styles.RenderKeyHint("d", "Remove"),
 		styles.RenderKeyHint("Tab", "Next Tab"),
 		styles.RenderKeyHint("r", "Refresh"),
 	}
@@ -541,30 +652,22 @@ func (m LibraryModel) changeStatus(mangaID string, newStatus string) tea.Cmd {
 }
 
 // updateProgress updates the reading progress
-func (m LibraryModel) updateProgress(mangaID string) tea.Cmd {
+func (m LibraryModel) setChapter(mangaID string, chapter int) tea.Cmd {
 	return func() tea.Msg {
-		// For now, increment chapter by 1
-		// TODO: Open modal to input chapter number
-		ctx := context.Background()
-
-		// Get current entry to find current chapter and status
-		var currentChapter int
-		var currentStatus string
-		var isFavorite bool
-		for _, entry := range m.filteredEntries {
-			if entry.MangaID == mangaID {
-				currentChapter = entry.CurrentChapter + 1
-				currentStatus = entry.Status
-				isFavorite = entry.IsFavorite
-				break
-			}
-		}
-
-		err := m.client.UpdateProgress(ctx, mangaID, currentChapter, currentStatus, isFavorite)
-		if err != nil {
+		// Only the chapter changes; status and favorite stay as they are
+		if err := m.client.UpdateProgress(context.Background(), mangaID, chapter, "", nil); err != nil {
 			return LibraryErrorMsg{Error: err}
 		}
-		// Reload library
+		return m.loadLibrary()
+	}
+}
+
+// removeFromLibrary removes a manga from the library, then reloads it
+func (m LibraryModel) removeFromLibrary(mangaID string) tea.Cmd {
+	return func() tea.Msg {
+		if err := m.client.RemoveFromLibrary(context.Background(), mangaID); err != nil {
+			return LibraryErrorMsg{Error: err}
+		}
 		return m.loadLibrary()
 	}
 }

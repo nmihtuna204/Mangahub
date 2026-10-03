@@ -25,21 +25,23 @@ type ProgressWithManga struct {
 	Manga Manga `json:"manga"`
 }
 
-// UpdateProgressRequest represents a progress update request
+// UpdateProgressRequest represents a progress update request.
+// Only the fields present in the JSON body are changed; omitted fields keep
+// their stored value (or the column default when the entry is new).
 type UpdateProgressRequest struct {
-	MangaID        string `json:"manga_id" validate:"required"`
-	CurrentChapter int    `json:"current_chapter" validate:"min=0"`
-	Status         string `json:"status" validate:"omitempty,oneof=plan_to_read reading completed on_hold dropped"`
-	IsFavorite     bool   `json:"is_favorite"`
+	MangaID        string  `json:"manga_id" validate:"required"`
+	CurrentChapter *int    `json:"current_chapter,omitempty" validate:"omitempty,min=0"`
+	Status         *string `json:"status,omitempty" validate:"omitempty,oneof=plan_to_read reading completed on_hold dropped"`
+	IsFavorite     *bool   `json:"is_favorite,omitempty"`
 }
 
 // LibraryStats represents user library statistics
 type LibraryStats struct {
-	TotalManga     int     `json:"total_manga"`
-	Reading        int     `json:"reading"`
-	Completed      int     `json:"completed"`
-	PlanToRead     int     `json:"plan_to_read"`
-	Dropped        int     `json:"dropped"`
-	TotalChapters  int     `json:"total_chapters_read"`
-	AverageRating  float64 `json:"average_rating"`
+	TotalManga    int     `json:"total_manga"`
+	Reading       int     `json:"reading"`
+	Completed     int     `json:"completed"`
+	PlanToRead    int     `json:"plan_to_read"`
+	Dropped       int     `json:"dropped"`
+	TotalChapters int     `json:"total_chapters_read"`
+	AverageRating float64 `json:"average_rating"`
 }

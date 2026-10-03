@@ -99,10 +99,6 @@ var (
 			Foreground(lipgloss.Color("#666666")).
 			Italic(true)
 
-	// Room info
-	roomInfoStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#AAAAAA"))
-
 	userCountStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#00D4FF")).
 			Bold(true)
@@ -229,6 +225,19 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		m.updateViewportContent()
 		// Scroll to bottom
 		m.viewport.GotoBottom()
+
+	case ChatHistoryLoadedMsg:
+		// History is loaded before the live connection, so it goes first
+		if msg.RoomID == m.roomID {
+			history := make([]ChatMessage, 0, len(msg.Messages)+len(m.messages))
+			for _, h := range msg.Messages {
+				h.IsOwn = h.UserID == m.userID
+				history = append(history, h)
+			}
+			m.messages = append(history, m.messages...)
+			m.updateViewportContent()
+			m.viewport.GotoBottom()
+		}
 
 	case ChatRoomJoinedMsg:
 		m.roomID = msg.RoomID
@@ -451,8 +460,12 @@ func (m *ChatModel) SetUser(userID, username string) {
 	m.username = username
 }
 
-// SetRoom sets the current room info
+// SetRoom sets the current room info; switching rooms clears the messages
 func (m *ChatModel) SetRoom(roomID, roomName, mangaID, mangaName string) {
+	if roomID != m.roomID {
+		m.messages = make([]ChatMessage, 0)
+		m.updateViewportContent()
+	}
 	m.roomID = roomID
 	m.roomName = roomName
 	m.mangaID = mangaID
@@ -511,6 +524,12 @@ type ChatMessageReceivedMsg struct {
 	Content   string
 	Type      string
 	Timestamp time.Time
+}
+
+// ChatHistoryLoadedMsg carries a room's saved messages, oldest first
+type ChatHistoryLoadedMsg struct {
+	RoomID   string
+	Messages []ChatMessage
 }
 
 // ChatRoomJoinedMsg is sent when successfully joined a room

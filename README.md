@@ -1,45 +1,34 @@
-# MangaHub - Net-Centric Programming Project
+# MangaHub
 
-A comprehensive manga tracking system demonstrating all five network communication protocols: **HTTP, TCP, UDP, WebSocket, and gRPC**.
+A real-time manga tracking platform built in **Go**, demonstrating all five core network protocols — **HTTP, TCP, UDP, WebSocket, and gRPC** — working together through a single protocol bridge.
 
-## 📚 Overview
-
-MangaHub is a real-time manga synchronization platform built with Go, showcasing practical implementation of network programming concepts through an integrated multi-protocol architecture.
-
-### Core Features
-
-- **User Management**: Registration, authentication (JWT), profile management
-- **Manga Database**: Search, browse, detailed information
-- **Reading Progress Tracking**: Track current chapter, ratings, status
-- **Real-time Synchronization**: TCP broadcast to connected clients
-- **Chapter Notifications**: UDP push notifications to subscribers
-- **Community Chat**: WebSocket real-time discussions
-- **Internal Services**: gRPC for inter-service communication
-- **CLI Tool**: Command-line interface for all operations
+> One `PUT /users/progress` call fans out to a TCP broadcast, a UDP push notification, a WebSocket room message, and a gRPC audit log — all in real time.
 
 ---
 
-## ✅ All Phases Complete (10/10)
+## ✨ Features
 
-- ✅ **Phase 1**: Foundation & Database
-- ✅ **Phase 2**: HTTP REST API & Authentication
-- ✅ **Phase 3**: TCP Progress Sync Server
-- ✅ **Phase 4**: UDP Notification System
-- ✅ **Phase 5**: WebSocket Chat System
-- ✅ **Phase 6**: gRPC Internal Service
-- ✅ **Phase 7**: Protocol Integration & Cross-Communication
-- ✅ **Phase 8**: CLI Tool
-- ✅ **Phase 9**: Testing & Bug Fixes
-- ✅ **Phase 10**: Documentation & Demo Prep
+- **User accounts** — registration, JWT authentication, profile management
+- **Manga catalog** — 100+ seeded titles, full-text search ranked by relevance (SQLite FTS5), genre filtering, pagination
+- **Reading progress** — per-user library, chapter tracking, favorites, reading status
+- **Ratings & reviews** — 1-10 ratings with auto-computed averages (SQL triggers)
+- **Comments** — threaded replies, likes, spoiler flags, soft deletion
+- **Custom lists** — private or public named lists of manga, reorderable
+- **Leaderboards** — top-rated manga, most active users, weekly trending
+- **Real-time sync** — TCP broadcast of progress updates to all connected clients
+- **Push notifications** — UDP notifications; new chapters (found on MangaDex or released by an admin) go only to that manga's readers
+- **Community chat** — WebSocket rooms per manga with saved history
+- **Internal RPC** — gRPC service (with reflection) for search, details, and audit logging
+- **CLI & TUI** — Cobra-based CLI plus a Bubble Tea terminal UI
 
-## 🏗️ System Architecture
+## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     CLIENT LAYER                                │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │  Web Browser │  │  CLI Tool    │  │ Mobile App   │          │
-│  └──────────────┘  └──────────────┘  └──────────────┘          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐           │
+│  │  Web Browser │  │  CLI / TUI   │  │ Test Scripts │           │
+│  └──────────────┘  └──────────────┘  └──────────────┘           │
 └──────────┬──────────────────────┬──────────────────┬────────────┘
            │                      │                  │
     ┌──────▼──────┐      ┌────────▼────────┐  ┌─────▼──────┐
@@ -50,7 +39,7 @@ MangaHub is a real-time manga synchronization platform built with Go, showcasing
            └──────────┬───────────┴──────────────────┘
                       │
            ┌──────────▼──────────┐
-           │   Protocol Bridge   │ (Integration point)
+           │   Protocol Bridge   │  ← one HTTP call triggers all protocols
            └──────────┬──────────┘
                       │
          ┌────────────┼────────────┐
@@ -64,268 +53,207 @@ MangaHub is a real-time manga synchronization platform built with Go, showcasing
                       │
            ┌──────────▼──────────┐
            │  SQLite Database    │
-           │  (~/.mangahub/      │
-           │   data.db)          │
+           │  (pure-Go driver,   │
+           │   WAL, FTS5)        │
            └─────────────────────┘
 ```
 
----
+**Tech stack:** Go 1.25 · Gin · gorilla/websocket · gRPC + Protocol Buffers · SQLite (glebarez/go-sqlite, pure Go — no CGO) · Cobra + Viper · Bubble Tea · JWT · bcrypt · logrus · Docker
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- Go 1.19 or later
-- SQLite 3.x
+- Go 1.24+ (no C compiler needed — the SQLite driver is pure Go)
 - Git
 
 ### Installation
 
 ```bash
 git clone https://github.com/nmihtuna204/Mangahub.git
-cd Mangahub/mangahub
+cd Mangahub
 go mod tidy
 ```
 
 ### Start All Services
 
+The database is created, migrated, and seeded automatically on first start (concurrent-start safe).
+
 ```bash
-# Terminal 1: HTTP API Server
-go run cmd/api-server/main.go
+# Terminal 1: HTTP API Server (+ WebSocket chat)
+go run ./cmd/api-server
 
 # Terminal 2: TCP Sync Server
-go run cmd/tcp-server/main.go
+go run ./cmd/tcp-server
 
 # Terminal 3: UDP Notifier
-go run cmd/udp-server/main.go
+go run ./cmd/udp-server
 
 # Terminal 4: gRPC Service
-go run cmd/grpc-server/main.go
+go run ./cmd/grpc-server
 ```
 
-### Build CLI Tool
+### Build the CLI / TUI
 
 ```bash
 go build -o bin/mangahub ./cmd/cli
 ./bin/mangahub --help
+
+go run ./cmd/tui   # terminal UI
 ```
 
----
+### Default Accounts
 
-## 📋 API Documentation
+| Username | Password | Role |
+|----------|----------|------|
+| `admin` | `admin123` | admin |
+| `reader1` / `reader2` / `mangafan` | `password123` | user |
+
+## 📋 API Overview
+
+Full reference with request/response examples for every endpoint and protocol: **[docs/API.md](docs/API.md)**.
 
 ### Authentication
 
-**Register**
 ```http
-POST /auth/register
-Content-Type: application/json
-
-{
-  "username": "reader1",
-  "email": "reader@example.com",
-  "password": "secure123"
-}
+POST /auth/register        {"username", "email", "password"}
+POST /auth/login           {"username", "password"} → JWT token
+GET  /auth/me              (Bearer token)
+POST /auth/refresh         (Bearer token)
+POST /auth/logout          (Bearer token)
 ```
 
-**Login**
+### Manga & Library
+
 ```http
-POST /auth/login
-Content-Type: application/json
+GET  /manga?q=one+piece&limit=10&offset=0     search & list
+GET  /manga/:id                               details with genres
+GET  /health                                  health check + DB stats
 
-{
-  "username": "reader1",
-  "password": "secure123"
-}
-
-Response:
-{
-  "success": true,
-  "data": {
-    "token": "eyJhbGciOiJIUzI1NiIs..."
-  }
-}
+POST   /users/library                          add manga (Bearer)
+GET    /users/library                          my library (Bearer)
+DELETE /users/library/:manga_id                remove (Bearer)
+PUT    /users/progress                         update progress (Bearer) ⭐ triggers all 5 protocols
 ```
 
-### Manga Operations
+### Social
 
-**Search Manga**
 ```http
-GET /manga?q=one+piece&limit=10&offset=0
-```
-
-**Get Manga Details**
-```http
-GET /manga/one-piece
-```
-
-### Library Management
-
-**Add to Library**
-```http
-POST /users/library
-Authorization: Bearer {token}
-Content-Type: application/json
-
-{
-  "manga_id": "one-piece",
-  "current_chapter": 0,
-  "status": "reading"
-}
-```
-
-**Get User Library**
-```http
-GET /users/library
-Authorization: Bearer {token}
-```
-
-**Update Reading Progress** ⭐ *Triggers all 5 protocols!*
-```http
-PUT /users/progress
-Authorization: Bearer {token}
-Content-Type: application/json
-
-{
-  "manga_id": "one-piece",
-  "current_chapter": 100,
-  "status": "reading",
-  "rating": 9
-}
+POST/DELETE /manga/:id/ratings     rate 1-10 with review (Bearer)
+GET         /manga/:id/ratings     summary + distribution
+POST        /manga/:id/comments    comment / reply (Bearer)
+GET         /manga/:id/comments    list comments
+POST/DELETE /comments/:id/like     like / unlike (Bearer)
+GET  /leaderboards/manga           top rated
+GET  /leaderboards/users           most active
+GET  /leaderboards/trending        weekly trending
+GET  /activities                   recent activity feed
 ```
 
 ### WebSocket Chat
 
-**Connect to Chat Room**
 ```javascript
-WebSocket ws://localhost:8080/ws/chat?room_id=one-piece
-Authorization: Bearer {token}
+// JWT required (header or ?token=)
+ws://localhost:8080/ws/chat?room_id=general&token=<JWT>
 
-Send messages:
-{
-  "message": "This manga is amazing!"
-}
-
-Receive broadcasts:
-{
-  "user_id": "user123",
-  "username": "reader1",
-  "message": "This manga is amazing!",
-  "timestamp": 1700000000,
-  "type": "message"
-}
+send:    {"content": "This manga is amazing!"}
+receive: {"user_id", "username", "content", "timestamp", "type", "room_id"}
 ```
 
----
+### gRPC (with server reflection)
 
-## 🔄 Protocol Integration Demo
-
-When user updates progress via HTTP:
-
-1. **HTTP** - REST API receives update request
-2. **🔌 Bridge** - Triggered on progress update
-3. **TCP** - Broadcast to sync clients: `{"user_id":"...", "manga_id":"...", "chapter":100}`
-4. **UDP** - Send notification: `{"type":"chapter_release", "message":"New progress update"}`
-5. **WebSocket** - Notify chat room members in real-time
-6. **gRPC** - Log to audit service via RPC call
-
-**Result:** Single API call triggers all 5 protocols!
-
----
-
-## 📊 Database Schema
-
-### Users Table
-```sql
-CREATE TABLE users (
-    id TEXT PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+```bash
+grpcurl -plaintext localhost:9092 list
+grpcurl -plaintext -d '{"query":"naruto","limit":5}' localhost:9092 mangahub.v1.MangaService/SearchManga
+grpcurl -plaintext -d '{"manga_id":"<uuid>"}'        localhost:9092 mangahub.v1.MangaService/GetManga
+# UpdateProgress needs your JWT (from POST /auth/login) and only changes your own progress
+grpcurl -plaintext -H "authorization: Bearer <token>" \
+        -d '{"user_id":"reader1","manga_id":"<uuid>","current_chapter":50,"status":"reading"}' \
+        localhost:9092 mangahub.v1.MangaService/UpdateProgress
 ```
 
-### Manga Table
-```sql
-CREATE TABLE manga (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    author TEXT,
-    artist TEXT,
-    status TEXT,
-    genres TEXT,
-    total_chapters INTEGER,
-    rating REAL,
-    year INTEGER,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
+## 🔄 Protocol Integration Flow
 
-### Reading Progress Table
-```sql
-CREATE TABLE reading_progress (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    manga_id TEXT NOT NULL,
-    current_chapter INTEGER,
-    status TEXT,
-    rating INTEGER,
-    last_read_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(user_id, manga_id),
-    FOREIGN KEY(user_id) REFERENCES users(id),
-    FOREIGN KEY(manga_id) REFERENCES manga(id)
-);
-```
+When a user updates progress via HTTP:
 
----
+1. **HTTP** — REST API validates and persists the update
+2. **Bridge** — protocol bridge is triggered
+3. **TCP** — progress broadcast to all connected sync clients
+4. **UDP** — chapter notification pushed to registered subscribers
+5. **WebSocket** — chat room members notified in real time
+6. **gRPC** — audit entry logged via RPC
+
+## 📊 Database
+
+Normalized SQLite schema (21 tables) managed by code-first migrations in [`pkg/database/sqlite.go`](pkg/database/sqlite.go):
+
+- `users`, `manga`, `genres`, `manga_genres`, `manga_external_ids`
+- `reading_progress` (unique per user+manga), `manga_ratings`, `comments`, `comment_likes`
+- `chat_rooms`, `chat_room_members`, `chat_messages`
+- `custom_lists`, `custom_list_items`, `activity_feed`, `seed_meta`
+- `manga_fts` — FTS5 full-text index kept in sync by triggers
+
+Highlights:
+
+- **Triggers** keep `manga.average_rating`, comment like counts, and the activity feed up to date automatically
+- **Concurrent-start-safe seeding** — a single-row `seed_meta` marker claimed inside a write transaction guarantees exactly one process seeds the DB
+- **WAL mode + busy timeout** for safe multi-process access
 
 ## 🧪 Testing
 
 ```bash
-# Run unit tests
-go test -v ./internal/auth
+# Everything: unit tests + end-to-end tests (no servers needed; the
+# end-to-end suite starts all five protocols in-process on random ports)
+go test ./...
 
-# Run all tests
-go test -v ./...
-
-# Generate coverage report
-go test -coverprofile=coverage.out ./...
-go tool cover -html=coverage.out
+make test-unit          # unit tests only (internal/, pkg/)
+make test-e2e           # end-to-end suite (test/)
+make test-integration   # live tests against the 4 running servers (MANGAHUB_LIVE=1)
+make test-coverage      # coverage.html (~71% of backend/protocol code)
 ```
 
----
+PowerShell end-to-end scripts (Windows):
 
-## 🎓 Learning Outcomes
+```powershell
+.\test-all.ps1           # full suite: unit + HTTP + TCP + UDP + gRPC + CLI + integration
+.\test-api.ps1           # REST API flow
+.\test-curl.ps1          # manual curl walkthrough
+.\test-tcp.ps1           # TCP broadcast between two clients
+.\test-udp-simple.ps1    # UDP register + notification receive
+.\test-websocket.ps1     # two-client WebSocket chat broadcast
+.\test-grpc.ps1          # all three RPCs via grpcurl
+.\test-integration.ps1   # cross-protocol bridge verification
+bash test/load_test.sh   # load test (bash + curl; grpcurl optional)
+```
 
-This project demonstrates:
+Each script checks its results and exits 1 if any check fails.
 
-- **Network Protocols**: Practical implementation of HTTP, TCP, UDP, WebSocket, and gRPC
-- **Concurrency**: Goroutines, channels, and synchronization patterns
-- **Database Design**: SQLite schema design and query optimization
-- **API Design**: RESTful principles and error handling
-- **Real-time Communication**: Broadcasting and event-driven architecture
-- **CLI Development**: Cobra framework for command-line tools
-- **Testing**: Unit and integration testing strategies
+CI (`.github/workflows/ci.yml`) runs gofmt, vet, build and the whole suite with the race detector on every push.
 
----
+Unit tests run against the **real production schema** — the test databases are created by the same `Migrate()` the servers use, so schema drift is caught at test time.
 
-## 📝 License
+## 🐳 Docker
 
-MIT License - See LICENSE file for details
+```bash
+docker compose up --build
+```
 
----
+See [DOCKER.md](DOCKER.md) for details.
+
+## 📚 Documentation
+
+- [docs/API.md](docs/API.md) — API reference (REST, WebSocket, TCP, UDP, gRPC)
+- [HOW_TO_RUN.md](HOW_TO_RUN.md) — step-by-step run guide
+- [TEST.md](TEST.md) — full manual test catalog
+- [CLI_README.md](CLI_README.md) — CLI usage
+- [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) — fixed issues, open issues, test coverage and measured performance
+- [docs/](docs/) — design notes and phase summaries
 
 ## 👨‍💻 Authors
 
-- Your Name
-- Collaborators
+- [nmihtuna204](https://github.com/nmihtuna204)
+- [duythucne22](https://github.com/duythucne22)
 
----
+## 📝 License
 
-## 📞 Support
-
-For issues, please open a GitHub issue or contact the development team.
-
+MIT

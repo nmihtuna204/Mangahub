@@ -9,6 +9,7 @@ package rating
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -34,9 +35,15 @@ type Repository interface {
 	// GetSummary gets rating summary for a manga from manga table (auto-calculated)
 	GetSummary(ctx context.Context, mangaID string) (*models.RatingSummary, error)
 
-	// Delete removes a user's rating
+	// Delete removes a user's rating (ErrRatingNotFound if there is none)
 	Delete(ctx context.Context, userID, mangaID string) error
+
+	// MangaExists reports whether the manga exists
+	MangaExists(ctx context.Context, mangaID string) (bool, error)
 }
+
+// ErrRatingNotFound is returned by Delete when the user has no rating for the manga.
+var ErrRatingNotFound = errors.New("rating not found")
 
 type repository struct {
 	db *sql.DB
@@ -69,9 +76,9 @@ func (r *repository) CreateOrUpdate(ctx context.Context, userID, mangaID string,
 		ratingID = uuid.New().String()
 		_, err = r.db.ExecContext(ctx, `
 			INSERT INTO manga_ratings 
-			(id, manga_id, user_id, rating, review, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			ratingID, mangaID, userID, req.Rating, req.ReviewText, now, now,
+			(id, manga_id, user_id, rating, review_text, is_spoiler, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			ratingID, mangaID, userID, req.Rating, req.ReviewText, req.IsSpoiler, now, now,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("insert rating: %w", err)
@@ -81,9 +88,9 @@ func (r *repository) CreateOrUpdate(ctx context.Context, userID, mangaID string,
 		ratingID = existingID
 		_, err = r.db.ExecContext(ctx, `
 			UPDATE manga_ratings 
-			SET rating = ?, review = ?, updated_at = ?
+			SET rating = ?, review_text = ?, is_spoiler = ?, updated_at = ?
 			WHERE id = ?`,
-			req.Rating, req.ReviewText, now, ratingID,
+			req.Rating, req.ReviewText, req.IsSpoiler, now, ratingID,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("update rating: %w", err)
@@ -97,11 +104,11 @@ func (r *repository) CreateOrUpdate(ctx context.Context, userID, mangaID string,
 func (r *repository) GetByID(ctx context.Context, id string) (*models.MangaRating, error) {
 	var rating models.MangaRating
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, manga_id, user_id, rating, review, created_at, updated_at
+		SELECT id, manga_id, user_id, rating, COALESCE(review_text, ''), is_spoiler, created_at, updated_at
 		FROM manga_ratings WHERE id = ?`, id,
 	).Scan(
 		&rating.ID, &rating.MangaID, &rating.UserID, &rating.Rating,
-		&rating.ReviewText, &rating.CreatedAt, &rating.UpdatedAt,
+		&rating.ReviewText, &rating.IsSpoiler, &rating.CreatedAt, &rating.UpdatedAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -116,11 +123,11 @@ func (r *repository) GetByID(ctx context.Context, id string) (*models.MangaRatin
 func (r *repository) GetByUserAndManga(ctx context.Context, userID, mangaID string) (*models.MangaRating, error) {
 	var rating models.MangaRating
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, manga_id, user_id, rating, review, created_at, updated_at
+		SELECT id, manga_id, user_id, rating, COALESCE(review_text, ''), is_spoiler, created_at, updated_at
 		FROM manga_ratings WHERE user_id = ? AND manga_id = ?`, userID, mangaID,
 	).Scan(
 		&rating.ID, &rating.MangaID, &rating.UserID, &rating.Rating,
-		&rating.ReviewText, &rating.CreatedAt, &rating.UpdatedAt,
+		&rating.ReviewText, &rating.IsSpoiler, &rating.CreatedAt, &rating.UpdatedAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -134,13 +141,13 @@ func (r *repository) GetByUserAndManga(ctx context.Context, userID, mangaID stri
 // GetByManga retrieves all ratings for a manga with user info
 func (r *repository) GetByManga(ctx context.Context, mangaID string, limit, offset int) ([]models.RatingWithUser, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT r.id, r.manga_id, r.user_id, r.rating, r.review,
+		SELECT r.id, r.manga_id, r.user_id, r.rating, COALESCE(r.review_text, ''), r.is_spoiler,
 		       r.created_at, r.updated_at,
 		       u.username, u.display_name
 		FROM manga_ratings r
 		JOIN users u ON r.user_id = u.id
 		WHERE r.manga_id = ?
-		ORDER BY r.created_at DESC
+		ORDER BY r.created_at DESC, r.rowid DESC
 		LIMIT ? OFFSET ?`, mangaID, limit, offset,
 	)
 	if err != nil {
@@ -152,7 +159,7 @@ func (r *repository) GetByManga(ctx context.Context, mangaID string, limit, offs
 	for rows.Next() {
 		var r models.RatingWithUser
 		err := rows.Scan(
-			&r.ID, &r.MangaID, &r.UserID, &r.Rating, &r.ReviewText,
+			&r.ID, &r.MangaID, &r.UserID, &r.Rating, &r.ReviewText, &r.IsSpoiler,
 			&r.CreatedAt, &r.UpdatedAt,
 			&r.Username, &r.DisplayName,
 		)
@@ -222,9 +229,19 @@ func (r *repository) Delete(ctx context.Context, userID, mangaID string) error {
 
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
-		return fmt.Errorf("rating not found")
+		return ErrRatingNotFound
 	}
 	return nil
+}
+
+// MangaExists reports whether the manga exists
+func (r *repository) MangaExists(ctx context.Context, mangaID string) (bool, error) {
+	var one int
+	err := r.db.QueryRowContext(ctx, "SELECT 1 FROM manga WHERE id = ?", mangaID).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // GetTopRatedManga returns manga sorted by rating for leaderboards
@@ -232,9 +249,10 @@ func (r *repository) Delete(ctx context.Context, userID, mangaID string) error {
 // Currently not used as leaderboards use manga.average_rating directly
 func (r *repository) GetTopRatedManga(ctx context.Context, limit, offset int) ([]models.Manga, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT m.id, m.title, m.author, m.artist, m.description, m.cover_url, 
-		       m.status, m.type, m.total_chapters, m.average_rating, m.rating_count, 
-		       m.year, m.created_at, m.updated_at
+		SELECT m.id, m.title, COALESCE(m.author, ''), COALESCE(m.artist, ''), COALESCE(m.description, ''),
+		       COALESCE(m.cover_url, ''),
+		       m.status, m.type, m.total_chapters, m.average_rating, m.rating_count,
+		       COALESCE(m.year, 0), m.created_at, m.updated_at
 		FROM manga m
 		WHERE m.rating_count > 0
 		ORDER BY m.average_rating DESC, m.rating_count DESC
