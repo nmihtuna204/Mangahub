@@ -52,15 +52,27 @@ func readString(t *testing.T, c *net.UDPConn) string {
 	return string(buf[:n])
 }
 
+// waitFor polls cond until it holds. The read loop hands each REGISTER and
+// UNREGISTER to the hub goroutine and replies at once, so the reply can arrive
+// before the hub has updated the subscriber set.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestRegisterBroadcastUnregister(t *testing.T) {
 	s, addr, _ := startServer(t)
 	defer s.Stop()
 
 	a := subscribe(t, addr)
 	b := subscribe(t, addr)
-	if n := s.SubscriberCount(); n != 2 {
-		t.Fatalf("subscribers = %d, want 2", n)
-	}
+	waitFor(t, "2 subscribers", func() bool { return s.SubscriberCount() == 2 })
 
 	// External broadcast request, as the API's protocol bridge sends it
 	sender, _ := net.DialUDP("udp", nil, addr)
@@ -82,9 +94,7 @@ func TestRegisterBroadcastUnregister(t *testing.T) {
 	if got := readString(t, a); got != "UNREGISTERED" {
 		t.Errorf("unregister reply = %q", got)
 	}
-	if n := s.SubscriberCount(); n != 1 {
-		t.Errorf("subscribers after unregister = %d, want 1", n)
-	}
+	waitFor(t, "1 subscriber after unregister", func() bool { return s.SubscriberCount() == 1 })
 }
 
 // Regression: the closed-socket check never matched, so after Stop the read
@@ -148,9 +158,7 @@ func TestTargetedNotifications(t *testing.T) {
 	if got := readString(t, rejected); got != "ERROR invalid token" {
 		t.Errorf("bad token reply = %q", got)
 	}
-	if n := s.SubscriberCount(); n != 3 {
-		t.Errorf("subscribers = %d, want 3 (the bad token must not register)", n)
-	}
+	waitFor(t, "3 subscribers (the bad token must not register)", func() bool { return s.SubscriberCount() == 3 })
 
 	sender, _ := net.DialUDP("udp", nil, addr)
 	defer sender.Close()
